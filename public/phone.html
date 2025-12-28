@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Phone Camera Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; padding: 20px; background: #000; color: white; }
+        .container { max-width: 100%; }
+        h1 { text-align: center; margin: 20px 0; color: #4cc9f0; font-size: 24px; }
+        button { width: 100%; padding: 18px; margin: 10px 0; background: #28a745; color: white; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; }
+        video { width: 100%; height: 300px; background: #222; border-radius: 10px; margin: 10px 0; }
+        .status { padding: 15px; background: rgba(255,255,255,0.1); border-radius: 10px; margin: 15px 0; font-size: 16px; }
+        .error { background: rgba(220,53,69,0.2); color: #ff6b6b; }
+        .success { background: rgba(40,167,69,0.2); color: #6bff8d; }
+        input { width: 100%; padding: 15px; margin: 10px 0; border: 2px solid #4cc9f0; border-radius: 10px; font-size: 18px; background: #222; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 Phone Camera Test</h1>
+        
+        <div class="status" id="status">Checking camera access...</div>
+        
+        <div id="connectSection">
+            <input type="text" id="roomId" placeholder="Enter Room ID" value="TEST123">
+            <button onclick="testCamera()">📸 Test Camera First</button>
+            <button onclick="joinSession()" style="background: #007bff;">🎥 Join Session</button>
+        </div>
+        
+        <div id="videoSection" style="display: none;">
+            <video id="testVideo" autoplay muted playsinline></video>
+            <button onclick="startRealSession()" id="startBtn" style="background: #28a745;">✅ Start Real Session</button>
+            <button onclick="stopCamera()" style="background: #dc3545;">❌ Stop Camera</button>
+        </div>
+        
+        <div style="margin-top: 30px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 10px;">
+            <h3>Troubleshooting:</h3>
+            <p>1. Use Chrome or Firefox on phone</p>
+            <p>2. Allow camera permission when asked</p>
+            <p>3. If blocked, tap 🔒 in address bar → Site settings → Allow camera</p>
+        </div>
+    </div>
+
+    <script>
+        // Polyfill for mobile browsers
+        function ensureGetUserMedia() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                return true;
+            }
+            
+            // Legacy API support
+            navigator.getUserMedia = navigator.getUserMedia || 
+                                   navigator.webkitGetUserMedia || 
+                                   navigator.mozGetUserMedia ||
+                                   navigator.msGetUserMedia;
+            
+            if (navigator.getUserMedia) {
+                navigator.mediaDevices = navigator.mediaDevices || {};
+                navigator.mediaDevices.getUserMedia = function(constraints) {
+                    return new Promise(function(resolve, reject) {
+                        navigator.getUserMedia(constraints, resolve, reject);
+                    });
+                };
+                return true;
+            }
+            
+            return false;
+        }
+        
+        function updateStatus(text, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.className = 'status ' + type;
+        }
+        
+        async function testCamera() {
+            updateStatus('Testing camera access...');
+            
+            if (!ensureGetUserMedia()) {
+                updateStatus('❌ Camera API not supported. Use Chrome/Firefox.', 'error');
+                return;
+            }
+            
+            try {
+                // Try different camera configurations
+                const constraints = {
+                    video: {
+                        facingMode: 'user',  // Front camera
+                        width: { min: 640, ideal: 1280, max: 1920 },
+                        height: { min: 480, ideal: 720, max: 1080 }
+                    },
+                    audio: true
+                };
+                
+                const stream = await navigator.mediaDevices.getUserMedia(constraints)
+                    .catch(async () => {
+                        // Try simpler constraints
+                        return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    })
+                    .catch(async () => {
+                        // Try without audio
+                        return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    })
+                    .catch(async () => {
+                        // Try with just basic video
+                        return await navigator.mediaDevices.getUserMedia({ video: {} });
+                    });
+                
+                if (stream) {
+                    document.getElementById('testVideo').srcObject = stream;
+                    document.getElementById('connectSection').style.display = 'none';
+                    document.getElementById('videoSection').style.display = 'block';
+                    
+                    updateStatus('✅ Camera working! Ready to join session.', 'success');
+                    
+                    // Store stream for later use
+                    window.testStream = stream;
+                }
+                
+            } catch (error) {
+                console.error('Camera error:', error);
+                updateStatus(`❌ Camera error: ${error.name}. Please allow camera permission.`, 'error');
+                
+                // Show instructions
+                alert('Camera permission denied!\n\n1. Tap the lock icon (🔒) in address bar\n2. Go to "Site settings"\n3. Allow Camera and Microphone\n4. Refresh page');
+            }
+        }
+        
+        function joinSession() {
+            const roomId = document.getElementById('roomId').value.trim().toUpperCase();
+            if (!roomId) {
+                alert('Please enter Room ID');
+                return;
+            }
+            
+            // Redirect to main app with room ID
+            window.location.href = `/?room=${roomId}&type=receiver`;
+        }
+        
+        function startRealSession() {
+            const roomId = document.getElementById('roomId').value.trim().toUpperCase();
+            if (roomId) {
+                window.location.href = `/?room=${roomId}&type=receiver`;
+            }
+        }
+        
+        function stopCamera() {
+            if (window.testStream) {
+                window.testStream.getTracks().forEach(track => track.stop());
+                window.testStream = null;
+            }
+            document.getElementById('testVideo').srcObject = null;
+            document.getElementById('connectSection').style.display = 'block';
+            document.getElementById('videoSection').style.display = 'none';
+            updateStatus('Camera stopped');
+        }
+        
+        // Auto-check on load
+        window.onload = function() {
+            if (ensureGetUserMedia()) {
+                updateStatus('✅ Camera API available. Click "Test Camera"');
+            } else {
+                updateStatus('❌ Camera not supported. Use Chrome 21+, Firefox 17+, or Safari 11+', 'error');
+            }
+            
+            // Auto-fill room ID from URL
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('room')) {
+                document.getElementById('roomId').value = urlParams.get('room');
+            }
+        };
+    </script>
+</body>
+</html>

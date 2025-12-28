@@ -361,9 +361,15 @@ class ProctoringApp {
             console.log('🎯 Forcing proctor role for room creator');
         }
         
-       const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-         const wsUrl = `${wsProtocol}${window.location.host}?room=${this.roomId}&userId=${this.userId}&type=${wsType}&name=${encodeURIComponent(this.userName)}`;
-         console.log('🔌 Connecting to WebSocket:', wsUrl);
+        // DEBUG: Log current location info
+        console.log('🌐 Current protocol:', window.location.protocol);
+        console.log('🌐 Current host:', window.location.host);
+        console.log('🌐 Full URL:', window.location.href);
+        
+        // FIXED: Use correct protocol and host (no port 3000)
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const wsUrl = `${wsProtocol}${window.location.host}?room=${this.roomId}&userId=${this.userId}&type=${wsType}&name=${encodeURIComponent(this.userName)}`;
+        console.log('🔌 Connecting to WebSocket:', wsUrl);
         
         this.signaling = new WebSocket(wsUrl);
         

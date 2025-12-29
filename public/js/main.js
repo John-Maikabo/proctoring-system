@@ -725,51 +725,28 @@ class ProctoringApp {
         console.log(`🚀 Creating RTCPeerConnection for ${peerName} (${peerId})`);
         
         // FIXED: Added TURN servers for cross-network connectivity
-        const config = {
-            iceServers: [
-                // Google STUN servers
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                
-                // Twilio STUN servers (very reliable)
-                { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
-                
-                // CRITICAL: TURN servers for cross-network connectivity
-                {
-                    urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                
-                // Additional free TURN servers
-                {
-                    urls: 'turn:turn.bistri.com:80',
-                    username: 'homeo',
-                    credential: 'homeo'
-                },
-                {
-                    urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
-                    username: 'webrtc',
-                    credential: 'webrtc'
-                }
-            ],
-            iceTransportPolicy: 'all',  // Allow relay connections (CRITICAL!)
-            iceCandidatePoolSize: 10,
-            rtcpMuxPolicy: 'require',
-            bundlePolicy: 'max-bundle'
-        };
+const config = {
+    iceServers: [
+        // Basic STUN servers (choose 2-3 max)
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        
+        // Primary TURN servers for cross-network
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ],
+    iceTransportPolicy: 'all',
+    iceCandidatePoolSize: 5
+};
+
         
         const peerConnection = new RTCPeerConnection(config);
         this.peerConnections.set(peerId, peerConnection);

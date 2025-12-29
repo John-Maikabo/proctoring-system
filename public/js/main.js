@@ -1,4 +1,4 @@
-// ProctoringApp.js - Complete Fixed Version with Cross-Network Support
+// ProctoringApp.js - Complete Fixed Version with Twilio TURN Support
 class ProctoringApp {
     constructor() {
         console.log('🚀 ProctoringApp constructor called');
@@ -19,6 +19,7 @@ class ProctoringApp {
         this.isRecording = false;
         this.snapshots = [];
         this.remoteStreams = new Map();
+        this.twilioTurnServers = null; // Store Twilio servers
         
         // Check for existing proctor session
         this.checkSavedProctorSession();
@@ -54,8 +55,11 @@ class ProctoringApp {
         }
     }
     
-    init() {
+    async init() {
         console.log('🔧 App init called');
+        
+        // Fetch TURN servers early (critical for cross-network)
+        await this.fetchTurnServers();
         
         setTimeout(() => {
             this.bindEvents();
@@ -93,6 +97,62 @@ class ProctoringApp {
             // Show proctor rejoin panel if applicable
             this.showProctorRejoinPanel();
         }, 100);
+    }
+    
+    async fetchTurnServers() {
+        console.log('🔄 Fetching TURN servers from API...');
+        try {
+            const response = await fetch('/api/turn-config');
+            const data = await response.json();
+            
+            if (data.success && data.iceServers && data.iceServers.length > 0) {
+                this.twilioTurnServers = data.iceServers;
+                console.log(`✅ Loaded ${this.twilioTurnServers.length} Twilio TURN servers`);
+                console.log('Source:', data.source || 'unknown');
+                
+                // Log server types
+                this.twilioTurnServers.forEach((server, index) => {
+                    const urls = Array.isArray(server.urls) ? server.urls[0] : server.urls;
+                    const type = urls.includes('turn:') ? 'TURN' : 'STUN';
+                    console.log(`  Server ${index}: ${type} - ${urls}`);
+                });
+                
+                this.updateStatus('✅ TURN servers loaded', 'connected');
+            } else {
+                console.warn('⚠️ No Twilio TURN servers available, using fallback');
+                this.twilioTurnServers = this.getFallbackIceServers();
+            }
+        } catch (error) {
+            console.warn('⚠️ Failed to fetch TURN servers:', error);
+            this.twilioTurnServers = this.getFallbackIceServers();
+            this.updateStatus('⚠️ Using fallback servers', 'connecting');
+        }
+    }
+    
+    getFallbackIceServers() {
+        console.log('🔄 Using fallback ICE servers');
+        return [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // Free TURN servers as backup
+            {
+                urls: [
+                    'turn:relay.metered.ca:80',
+                    'turn:relay.metered.ca:443',
+                    'turn:relay.metered.ca:443?transport=tcp'
+                ],
+                username: 'c81f7ecb5fcd94a87ffdd9b4',
+                credential: 'dWjhBOMV8LHPNQmI'
+            }
+        ];
+    }
+    
+    getIceServers() {
+        // Always use Twilio servers if available
+        if (this.twilioTurnServers && this.twilioTurnServers.length > 0) {
+            return this.twilioTurnServers;
+        }
+        return this.getFallbackIceServers();
     }
     
     showProctorRejoinPanel() {
@@ -724,20 +784,14 @@ class ProctoringApp {
     createPeerConnection(peerId, peerName, peerType) {
         console.log(`🚀 Creating RTCPeerConnection for ${peerName} (${peerId})`);
         
-        // FIXED: Added TURN servers for cross-network connectivity
-const config = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' }, // Free STUN only
-        // OpenRelay - Free public TURN (static credentials)
-        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    ],
-    iceTransportPolicy: 'all',
-    iceCandidatePoolSize: 10
-};
-
+        // ✅ FIXED: Use Twilio TURN servers from API
+        const config = {
+            iceServers: this.getIceServers(),
+            iceTransportPolicy: 'all',
+            iceCandidatePoolSize: 10
+        };
+        
+        console.log('📊 ICE Servers configured:', config.iceServers);
         
         const peerConnection = new RTCPeerConnection(config);
         this.peerConnections.set(peerId, peerConnection);
@@ -766,6 +820,7 @@ const config = {
                 // Check if it's a relay candidate (works across networks)
                 if (event.candidate.type === 'relay') {
                     console.log(`🚀 Found RELAY candidate for ${peerName}! This will work across networks.`);
+                    this.showMessage(`✅ Cross-network connection established with ${peerName}`, 'success');
                 } else if (event.candidate.type === 'srflx') {
                     console.log(`🌐 Found server reflexive candidate for ${peerName} (via STUN)`);
                 } else if (event.candidate.type === 'host') {
@@ -1558,6 +1613,12 @@ const config = {
             });
         }
         
+        console.log('TURN Servers:', this.getIceServers().length);
+        this.getIceServers().forEach((server, i) => {
+            const urls = Array.isArray(server.urls) ? server.urls[0] : server.urls;
+            console.log(`  Server ${i}: ${urls}`);
+        });
+        
         console.log('Peer Connections:', this.peerConnections.size);
         this.peerConnections.forEach((pc, peerId) => {
             const participant = this.participants.get(peerId);
@@ -1669,6 +1730,37 @@ window.addEventListener('load', () => {
         });
         
         console.log('✅ Forced all videos to be visible');
+    };
+    
+    // Test TURN servers
+    window.testTurnServers = async () => {
+        if (window.proctoringApp) {
+            const app = window.proctoringApp;
+            console.log('=== TESTING TURN SERVERS ===');
+            
+            const response = await fetch('/api/turn-config');
+            const data = await response.json();
+            console.log('API Response:', data);
+            
+            // Test creating a peer connection
+            const pc = new RTCPeerConnection({
+                iceServers: data.iceServers || []
+            });
+            
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    console.log(`ICE Candidate: ${event.candidate.type} - ${event.candidate.address}:${event.candidate.port}`);
+                }
+            };
+            
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            pc.addTrack(stream.getTracks()[0], stream);
+            
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            console.log('✅ Test peer connection created with TURN servers');
+        }
     };
     
     // Enhanced auto-debug with network info

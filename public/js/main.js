@@ -727,24 +727,18 @@ class ProctoringApp {
         // FIXED: Added TURN servers for cross-network connectivity
 const config = {
     iceServers: [
-        // Basic STUN servers (choose 2-3 max)
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' },
-        
-        // Primary TURN servers for cross-network
+        // Single reliable TURN server
         {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            urls: [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443?transport=tcp'
+            ],
             username: 'openrelayproject',
             credential: 'openrelayproject'
         }
     ],
-    iceTransportPolicy: 'all',
-    iceCandidatePoolSize: 5
+    iceTransportPolicy: 'relay',
+    iceCandidatePoolSize: 3
 };
 
         

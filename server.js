@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
+const twilio = require('twilio');  // Add Twilio for TURN servers
 
 const app = express();
 const server = http.createServer(app);
@@ -11,7 +12,7 @@ const wss = new WebSocket.Server({ server });
 const rooms = new Map();
 const connections = new Map();
 
-// Serve static files ../
+// Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Enable CORS
@@ -20,6 +21,140 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     next();
 });
+
+// ==================== TWILIO TURN ENDPOINTS ====================
+
+// Test endpoint to verify environment variables
+app.get('/api/check-twilio', (req, res) => {
+    const hasAccountSid = !!process.env.TWILIO_ACCOUNT_SID;
+    const hasApiKeySid = !!process.env.TWILIO_API_KEY_SID;
+    const hasApiKeySecret = !!process.env.TWILIO_API_KEY_SECRET;
+    
+    console.log('🔍 Twilio Environment Check:');
+    console.log('Account SID:', hasAccountSid ? '✅ Present' : '❌ Missing');
+    console.log('API Key SID:', hasApiKeySid ? '✅ Present' : '❌ Missing');
+    console.log('API Key Secret:', hasApiKeySecret ? '✅ Present' : '❌ Missing');
+    
+    res.json({
+        success: hasAccountSid && hasApiKeySid && hasApiKeySecret,
+        accountSid: hasAccountSid,
+        apiKeySid: hasApiKeySid,
+        apiKeySecret: hasApiKeySecret,
+        message: hasAccountSid && hasApiKeySid && hasApiKeySecret 
+            ? 'Twilio credentials are ready!' 
+            : 'Missing Twilio credentials'
+    });
+});
+
+// Get Twilio TURN credentials - for all users
+app.get('/api/turn-config', async (req, res) => {
+    console.log('🔄 Generating TURN credentials...');
+    
+    try {
+        // Check environment variables
+        const accountSid = process.env.TWILIO_ACCOUNT_SID;
+        const apiKeySid = process.env.TWILIO_API_KEY_SID;
+        const apiKeySecret = process.env.TWILIO_API_KEY_SECRET;
+        
+        if (!accountSid || !apiKeySid || !apiKeySecret) {
+            throw new Error('Missing Twilio environment variables');
+        }
+        
+        console.log('📋 Using Account SID:', accountSid.substring(0, 10) + '...');
+        console.log('📋 Using API Key SID:', apiKeySid.substring(0, 10) + '...');
+        
+        // Initialize Twilio client
+        const client = twilio(apiKeySid, apiKeySecret, { 
+            accountSid: accountSid,
+            region: 'us1'  // Important for trial accounts
+        });
+        
+        // Create token (includes TURN credentials)
+        const token = await client.tokens.create();
+        
+        console.log('✅ Twilio TURN token created successfully');
+        console.log('Token TTL:', token.ttl, 'seconds');
+        console.log('Number of ICE servers:', token.iceServers?.length || 0);
+        
+        // Log ICE server types
+        if (token.iceServers) {
+            token.iceServers.forEach((server, index) => {
+                const urls = Array.isArray(server.urls) ? server.urls[0] : server.urls;
+                const type = urls.includes('turn:') ? 'TURN' : 'STUN';
+                console.log(`  Server ${index}: ${type} - ${urls?.substring(0, 50)}`);
+            });
+        }
+        
+        res.json({
+            success: true,
+            source: 'twilio',
+            iceServers: token.iceServers || [],
+            ttl: token.ttl,
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('❌ Twilio TURN error:', error.message);
+        console.error('Stack:', error.stack);
+        
+        // Fallback to free TURN servers
+        console.log('🔄 Falling back to free TURN servers');
+        
+        res.json({
+            success: false,
+            source: 'fallback',
+            iceServers: [
+                // Free STUN
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                
+                // Free TURN - Metered.ca (reliable)
+                {
+                    urls: [
+                        'turn:relay.metered.ca:80',
+                        'turn:relay.metered.ca:443',
+                        'turn:relay.metered.ca:443?transport=tcp'
+                    ],
+                    username: 'c81f7ecb5fcd94a87ffdd9b4',
+                    credential: 'dWjhBOMV8LHPNQmI'
+                },
+                
+                // Backup TURN
+                {
+                    urls: 'turn:freeturn.net:3478',
+                    username: 'free',
+                    credential: 'free'
+                }
+            ],
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Quick TURN test endpoint
+app.get('/api/test-turn', async (req, res) => {
+    try {
+        const response = await fetch(`http://localhost:${PORT}/api/turn-config`);
+        const data = await response.json();
+        
+        res.json({
+            test: 'success',
+            hasTwilio: data.success,
+            serverCount: data.iceServers.length,
+            servers: data.iceServers.map(s => ({
+                type: Array.isArray(s.urls) ? 
+                    (s.urls[0].includes('turn:') ? 'TURN' : 'STUN') : 
+                    (s.urls.includes('turn:') ? 'TURN' : 'STUN'),
+                urls: Array.isArray(s.urls) ? s.urls[0] : s.urls
+            }))
+        });
+    } catch (error) {
+        res.json({ test: 'failed', error: error.message });
+    }
+});
+
+// ==================== ROOM MANAGEMENT API ====================
 
 // API endpoint to create a room (only for proctors)
 app.get('/api/create-room', (req, res) => {
@@ -88,7 +223,20 @@ app.get('/api/validate-room/:roomId', (req, res) => {
     });
 });
 
-// WebSocket connection handling - UPDATED
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        rooms: rooms.size,
+        connections: connections.size,
+        uptime: process.uptime()
+    });
+});
+
+// ==================== WEBSOCKET SIGNALING ====================
+
+// WebSocket connection handling
 wss.on('connection', (ws, req) => {
     console.log('=== New WebSocket Connection ===');
     
@@ -191,7 +339,7 @@ wss.on('connection', (ws, req) => {
     broadcastToRoom(roomId, userId, userJoinedMessage);
     console.log('User joined notification sent to room');
     
-    // Send peer connection requests to establish mesh - UPDATED
+    // Send peer connection requests to establish mesh
     setTimeout(() => {
         console.log(`Setting up peer connections for ${userName} (${userId})`);
         
@@ -286,7 +434,7 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-// Handle different message types - UPDATED
+// Handle different message types
 function handleMessage(roomId, senderId, data) {
     const room = rooms.get(roomId);
     if (!room) {
@@ -312,7 +460,7 @@ function handleMessage(roomId, senderId, data) {
                 if (targetConn && targetConn.ws.readyState === WebSocket.OPEN) {
                     console.log(`📨 Forwarding ${data.type} from ${sender.userName} to ${targetConn.userName}`);
                     
-                    // CRITICAL: Ensure we include sender info
+                    // Include sender info
                     const forwardData = {
                         ...data,
                         senderId: senderId,
@@ -414,20 +562,36 @@ function generateUserId() {
     return 'user_' + Math.random().toString(36).substring(2, 10);
 }
 
-// Start server
+// ==================== START SERVER ====================
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log('='.repeat(50));
-    console.log('WebRTC Proctoring Server Started!');
+    console.log('🚀 WebRTC Proctoring Server with Twilio TURN');
     console.log('='.repeat(50));
     console.log(`HTTP Server: http://localhost:${PORT}`);
     console.log(`WebSocket Server: ws://localhost:${PORT}`);
+    console.log(`Health Check: http://localhost:${PORT}/health`);
+    console.log(`Twilio Check: http://localhost:${PORT}/api/check-twilio`);
+    console.log(`TURN Config: http://localhost:${PORT}/api/turn-config`);
     console.log('='.repeat(50));
     console.log('\nTo use the system:');
     console.log('1. Open http://localhost:3000 as Proctor');
     console.log('2. Click "Create New Session"');
     console.log('3. Share the link with candidates');
-    console.log('4. Everyone sees everyone in a grid view');
+    console.log('4. Cross-network video enabled via Twilio TURN');
+    console.log('='.repeat(50));
+    
+    // Log Twilio status
+    const hasTwilio = process.env.TWILIO_ACCOUNT_SID && 
+                     process.env.TWILIO_API_KEY_SID && 
+                     process.env.TWILIO_API_KEY_SECRET;
+    console.log(`Twilio Status: ${hasTwilio ? '✅ Configured' : '❌ Not Configured'}`);
+    if (hasTwilio) {
+        console.log('   Using $10.83 trial credit for cross-network video');
+    } else {
+        console.log('   Using free TURN servers (limited reliability)');
+    }
     console.log('='.repeat(50));
 });
 
@@ -444,4 +608,5 @@ setInterval(() => {
     }
 }, 30 * 60 * 1000);
 
-console.log('Server initialized successfully');
+// Export for testing
+module.exports = { app, server, rooms, connections };

@@ -1,4 +1,4 @@
-// ProctoringApp.js - Complete Fixed Version with Cross-Network Support
+// ProctoringApp.js - Complete Fixed Version
 class ProctoringApp {
     constructor() {
         console.log('🚀 ProctoringApp constructor called');
@@ -705,76 +705,25 @@ class ProctoringApp {
         } else {
             console.log('⏳ No local stream available yet for peer', peerId);
         }
-        
-        // Add connection timeout for different networks
-        setTimeout(() => {
-            const pc = this.peerConnections.get(peerId);
-            if (pc && pc.iceConnectionState === 'checking') {
-                console.log(`⚠️ Connection to ${peerName} is taking too long (different network), forcing ICE restart`);
-                pc.restartIce();
-                
-                // Recreate offer
-                setTimeout(() => {
-                    this.createOfferForPeer(peerId);
-                }, 1000);
-            }
-        }, 10000); // 10 second timeout for different networks
     }
     
     createPeerConnection(peerId, peerName, peerType) {
         console.log(`🚀 Creating RTCPeerConnection for ${peerName} (${peerId})`);
         
-        // FIXED: Added TURN servers for cross-network connectivity
         const config = {
             iceServers: [
-                // Google STUN servers
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
                 { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                
-                // Twilio STUN servers (very reliable)
-                { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
-                
-                // CRITICAL: TURN servers for cross-network connectivity
-                {
-                    urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                
-                // Additional free TURN servers
-                {
-                    urls: 'turn:turn.bistri.com:80',
-                    username: 'homeo',
-                    credential: 'homeo'
-                },
-                {
-                    urls: 'turn:turn.anyfirewall.com:443?transport=tcp',
-                    username: 'webrtc',
-                    credential: 'webrtc'
-                }
+                { urls: 'stun:stun3.l.google.com:19302' }
             ],
-            iceTransportPolicy: 'all',  // Allow relay connections (CRITICAL!)
-            iceCandidatePoolSize: 10,
-            rtcpMuxPolicy: 'require',
-            bundlePolicy: 'max-bundle'
+            iceCandidatePoolSize: 10
         };
         
         const peerConnection = new RTCPeerConnection(config);
         this.peerConnections.set(peerId, peerConnection);
         
-        console.log(`✅ PeerConnection created for ${peerName} with TURN support`);
+        console.log(`✅ PeerConnection created for ${peerName}`);
         
         // Handle remote tracks - CRITICAL FIX
         peerConnection.ontrack = (event) => {
@@ -789,31 +738,15 @@ class ProctoringApp {
             this.processRemoteTrack(peerId, peerName, peerType, event);
         };
         
-        // Handle ICE candidates - WITH DETAILED LOGGING
+        // Handle ICE candidates
         peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                console.log(`❄️ ICE candidate for ${peerName}:`, 
-                    `${event.candidate.type} (${event.candidate.protocol}) - ${event.candidate.address}:${event.candidate.port}`);
-                
-                // Check if it's a relay candidate (works across networks)
-                if (event.candidate.type === 'relay') {
-                    console.log(`🚀 Found RELAY candidate for ${peerName}! This will work across networks.`);
-                } else if (event.candidate.type === 'srflx') {
-                    console.log(`🌐 Found server reflexive candidate for ${peerName} (via STUN)`);
-                } else if (event.candidate.type === 'host') {
-                    console.log(`🏠 Found host candidate for ${peerName} (same network)`);
-                }
-                
-                if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
-                    this.signaling.send(JSON.stringify({
-                        type: 'candidate',
-                        candidate: event.candidate,
-                        targetPeerId: peerId,
-                        senderId: this.userId
-                    }));
-                }
-            } else {
-                console.log(`✅ All ICE candidates gathered for ${peerName}`);
+            if (event.candidate && this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+                this.signaling.send(JSON.stringify({
+                    type: 'candidate',
+                    candidate: event.candidate,
+                    targetPeerId: peerId,
+                    senderId: this.userId
+                }));
             }
         };
         
@@ -843,68 +776,9 @@ class ProctoringApp {
             }
         };
         
-        // Handle ICE connection state - IMPROVED LOGGING
+        // Handle ICE connection state
         peerConnection.oniceconnectionstatechange = () => {
             console.log(`🧊 ICE state with ${peerName}: ${peerConnection.iceConnectionState}`);
-            
-            // Add specific handling for different states
-            switch(peerConnection.iceConnectionState) {
-                case 'checking':
-                    console.log(`⏳ ICE checking for ${peerName} - gathering candidates...`);
-                    break;
-                case 'connected':
-                    console.log(`✅ ICE connected to ${peerName}! Video should work now.`);
-                    
-                    // Log candidate types
-                    const stats = peerConnection.getStats();
-                    stats.then(results => {
-                        results.forEach(report => {
-                            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-                                console.log(`📊 Candidate pair succeeded for ${peerName}:`, 
-                                    `Local: ${report.localCandidateId}, Remote: ${report.remoteCandidateId}`);
-                            }
-                        });
-                    });
-                    break;
-                case 'failed':
-                    console.error(`❌ ICE failed for ${peerName}. Network issue or no TURN server.`);
-                    
-                    // Try to reconnect with different configuration
-                    setTimeout(() => {
-                        if (this.peerConnections.has(peerId)) {
-                            console.log(`🔄 Attempting ICE restart for ${peerName}`);
-                            peerConnection.restartIce();
-                            
-                            // Recreate offer
-                            setTimeout(() => {
-                                this.createOfferForPeer(peerId);
-                            }, 1000);
-                        }
-                    }, 2000);
-                    break;
-                case 'disconnected':
-                    console.log(`⚠️ ICE disconnected from ${peerName}`);
-                    break;
-                case 'closed':
-                    console.log(`🔒 ICE closed for ${peerName}`);
-                    break;
-            }
-        };
-        
-        // Also add ICE gathering state monitoring
-        peerConnection.onicegatheringstatechange = () => {
-            console.log(`🌐 ICE gathering state for ${peerName}: ${peerConnection.iceGatheringState}`);
-            
-            if (peerConnection.iceGatheringState === 'complete') {
-                console.log(`✅ ICE gathering complete for ${peerName}`);
-                
-                // Log local description (first 10 lines)
-                if (peerConnection.localDescription?.sdp) {
-                    console.log(`📊 Local description (first 10 lines):`);
-                    const lines = peerConnection.localDescription.sdp.split('\n').slice(0, 10);
-                    lines.forEach(line => console.log(`  ${line}`));
-                }
-            }
         };
         
         // Create offer immediately
@@ -1703,12 +1577,10 @@ window.addEventListener('load', () => {
         console.log('✅ Forced all videos to be visible');
     };
     
-    // Enhanced auto-debug with network info
+    // Auto-debug every 10 seconds
     setInterval(() => {
         if (window.proctoringApp && window.proctoringApp.signaling) {
-            console.log('=== Auto-diagnostic (Every 10s) ===');
-            console.log('Network status:', navigator.onLine ? 'Online' : 'Offline');
-            console.log('Connection type:', navigator.connection ? navigator.connection.effectiveType : 'Unknown');
+            console.log('=== Auto-diagnostic ===');
             window.proctoringApp.debugWebRTC();
         }
     }, 10000);

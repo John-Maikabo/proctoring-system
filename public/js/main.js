@@ -725,26 +725,18 @@ class ProctoringApp {
         console.log(`🚀 Creating RTCPeerConnection for ${peerName} (${peerId})`);
         
         // FIXED: Added TURN servers for cross-network connectivity
-const iceServers = [
-  {
-    urls: [
-      "stun:stun.l.google.com:19302",
-      "stun:global.stun.twilio.com:3478"
-    ]
-  },
-  {
-    urls: [
-      "turn:openrelay.metered.ca:80",
-      "turn:openrelay.metered.ca:443",
-      "turn:openrelay.metered.ca:443?transport=tcp"
+const config = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }, // Free STUN only
+        // OpenRelay - Free public TURN (static credentials)
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
     ],
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  }
-];
-
-const config = { iceServers }; // You can add iceTransportPolicy: 'all' here too
-const peerConnection = new RTCPeerConnection(config);
+    iceTransportPolicy: 'all',
+    iceCandidatePoolSize: 10
+};
 
         
         const peerConnection = new RTCPeerConnection(config);

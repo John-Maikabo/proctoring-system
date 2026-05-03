@@ -1104,40 +1104,6 @@ class ProctoringApp {
                 }
             }, 500);
         }
-            }, 300);
-        }
-    }
-        
-        const existingTrack = stream.getTracks().find(t => t.id === event.track.id);
-        if (!existingTrack && event.track) {
-            const oldTracks = stream.getTracks().filter(t => t.kind === event.track.kind);
-            oldTracks.forEach(track => {
-                console.log(`➖ Removing old ${track.kind} track`);
-                stream.removeTrack(track);
-            });
-            
-            stream.addTrack(event.track);
-            console.log(`➕ Added ${event.track.kind} track. Total tracks: ${stream.getTracks().length}`);
-        }
-        
-        this.ensureVideoContainer(peerId, peerName, peerType, stream);
-        
-        // Only try playing when both audio and video tracks are present
-        if (stream.getVideoTracks().length > 0 && stream.getAudioTracks().length > 0) {
-            if (this._playTimers[peerId]) clearTimeout(this._playTimers[peerId]);
-            this._playTimers[peerId] = setTimeout(() => {
-                const videoEl = document.getElementById(`remoteVideo-${peerId}`);
-                if (videoEl && videoEl.srcObject && stream.getVideoTracks().length > 0 && videoEl.readyState >= 2) {
-                    videoEl.play().then(() => {
-                        console.log(`▶️ Video playing for ${peerName}`);
-                    }).catch(e => {
-                        console.log(`Play attempt for ${peerName}:`, e.message);
-                        videoEl.muted = true;
-                        videoEl.play().catch(e2 => console.log(`Muted play for ${peerName}:`, e2.message));
-                    });
-                }
-            }, 500);
-        }
     }
     
     ensureVideoContainer(peerId, peerName, peerType, stream) {

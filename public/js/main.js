@@ -927,17 +927,31 @@ class ProctoringApp {
                 setTimeout(() => {
                     this.checkExistingTracks(peerId, peerName);
                 }, 500);
+                
+                // Try to play video after reconnection
+                setTimeout(() => {
+                    const videoEl = document.getElementById(`remoteVideo-${peerId}`);
+                    if (videoEl && videoEl.srcObject) {
+                        console.log(`🔄 Re-playing video for ${peerName} after reconnect`);
+                        videoEl.play().catch(() => {
+                            videoEl.muted = true;
+                            videoEl.play().catch(() => {});
+                        });
+                    }
+                }, 1500);
             } else if (peerConnection.connectionState === 'failed') {
-                console.log(`❌ Connection failed with ${peerName}, attempting to reconnect...`);
+                console.log(`❌ Connection failed with ${peerName}, removing video and reconnecting...`);
+                
+                // Remove the black video container immediately
+                this.removeRemoteVideo(peerId);
                 
                 setTimeout(() => {
-                    if (this.peerConnections.has(peerId) && this.localStream) {
+                    if (this.localStream) {
                         console.log(`🔄 Reconnecting to ${peerName}`);
                         this.peerConnections.delete(peerId);
-                        this.removeRemoteVideo(peerId);
                         this.connectToPeer(peerId, peerName, peerType);
                     }
-                }, 3000);
+                }, 2000);
             }
         };
         

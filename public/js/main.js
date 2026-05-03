@@ -1042,7 +1042,7 @@ class ProctoringApp {
     }
     
     processRemoteTrack(peerId, peerName, peerType, event) {
-        console.log(`🎬 Processing remote track for ${peerName}`);
+        console.log(`🎬 Processing remote track for ${peerName} - kind: ${event.track.kind}`);
         
         let stream = this.remoteStreams.get(peerId);
         if (!stream) {
@@ -1050,6 +1050,49 @@ class ProctoringApp {
             this.remoteStreams.set(peerId, stream);
             console.log(`✅ Created new stream for ${peerName}`);
         }
+        
+        const existingTrack = stream.getTracks().find(t => t.id === event.track.id);
+        if (!existingTrack && event.track) {
+            const oldTracks = stream.getTracks().filter(t => t.kind === event.track.kind);
+            oldTracks.forEach(track => {
+                console.log(`➖ Removing old ${track.kind} track`);
+                stream.removeTrack(track);
+            });
+            
+            stream.addTrack(event.track);
+            console.log(`➕ Added ${event.track.kind} track. Total tracks: ${stream.getTracks().length}`);
+        }
+        
+        this.ensureVideoContainer(peerId, peerName, peerType, stream);
+        
+        // Play when ANY video track arrives
+        if (event.track.kind === 'video' && stream.getVideoTracks().length > 0) {
+            if (this._playTimers[peerId]) clearTimeout(this._playTimers[peerId]);
+            this._playTimers[peerId] = setTimeout(() => {
+                const videoEl = document.getElementById(`remoteVideo-${peerId}`);
+                if (videoEl && videoEl.srcObject) {
+                    console.log(`🎯 Attempting play for ${peerName}, readyState: ${videoEl.readyState}`);
+                    
+                    const tryPlay = () => {
+                        videoEl.play().then(() => {
+                            console.log(`▶️ Video playing for ${peerName} (${videoEl.videoWidth}x${videoEl.videoHeight})`);
+                        }).catch(e => {
+                            console.log(`Play attempt for ${peerName}: ${e.message}, retrying in 1s`);
+                            videoEl.muted = true;
+                            videoEl.play().catch(() => {
+                                console.log(`Retrying muted play for ${peerName} in 2s`);
+                                setTimeout(tryPlay, 2000);
+                            });
+                        });
+                    };
+                    
+                    tryPlay();
+                }
+            }, 500);
+        }
+            }, 300);
+        }
+    }
         
         const existingTrack = stream.getTracks().find(t => t.id === event.track.id);
         if (!existingTrack && event.track) {

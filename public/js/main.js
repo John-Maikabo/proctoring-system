@@ -1067,6 +1067,16 @@ class ProctoringApp {
         
         // Ensure video container exists
         this.ensureVideoContainer(peerId, peerName, peerType, stream);
+        
+        // Force video to play when tracks arrive (even if container already exists)
+        setTimeout(() => {
+            const videoEl = document.getElementById(`remoteVideo-${peerId}`);
+            if (videoEl && videoEl.srcObject && stream.getVideoTracks().length > 0) {
+                videoEl.play().then(() => {
+                    console.log(`▶️ Video playing for ${peerName}`);
+                }).catch(e => console.log(`Play attempt for ${peerName}:`, e.message));
+            }
+        }, 200);
     }
     
     ensureVideoContainer(peerId, peerName, peerType, stream) {
@@ -1118,7 +1128,7 @@ class ProctoringApp {
             `;
             videoElement.autoplay = true;
             videoElement.playsInline = true;
-            videoElement.muted = true;
+            videoElement.muted = false;
             
             // Create status bar
             const statusBar = document.createElement('div');
@@ -1143,23 +1153,12 @@ class ProctoringApp {
         }
         
         // Set stream as source
-        if (!videoElement.srcObject || videoElement.srcObject.id !== stream.id) {
-            console.log(`🎬 Setting video source for ${peerName}`);
-            videoElement.srcObject = stream;
-            
-            // Force play
-            setTimeout(() => {
-                videoElement.play().catch(e => {
-                    console.log(`⚠️ Play error for ${peerName}:`, e);
-                    
-                    // Try muted play
-                    videoElement.muted = true;
-                    videoElement.play().catch(e2 => {
-                        console.log(`❌ Muted play also failed for ${peerName}:`, e2);
-                    });
-                });
-            }, 100);
-        }
+        videoElement.srcObject = stream;
+        
+        // Force play immediately
+        videoElement.play().catch(e => {
+            console.log(`⚠️ Initial play error for ${peerName}:`, e.message);
+        });
         
         // Track events
         if (stream.getVideoTracks()[0]) {
@@ -1255,6 +1254,13 @@ class ProctoringApp {
                 const participant = this.participants.get(data.senderId);
                 if (participant) {
                     peerConnection = this.createPeerConnection(data.senderId, participant.name, participant.type);
+                    
+                    if (this.localStream) {
+                        console.log(`➕ Adding local tracks to peer ${data.senderId} (handling offer)`);
+                        this.localStream.getTracks().forEach(track => {
+                            peerConnection.addTrack(track, this.localStream);
+                        });
+                    }
                 } else {
                     console.error('❌ No participant info for', data.senderId);
                     return;

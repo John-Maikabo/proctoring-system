@@ -237,6 +237,8 @@ class ProctoringApp {
         document.getElementById('startCallBtn')?.addEventListener('click', () => this.startCall());
         document.getElementById('endCallBtn')?.addEventListener('click', () => this.endCall());
         document.getElementById('copyLinkBtn')?.addEventListener('click', () => this.copyLink());
+        document.getElementById('shareWhatsAppBtn')?.addEventListener('click', () => this.shareWhatsApp());
+        document.getElementById('shareEmailBtn')?.addEventListener('click', () => this.shareEmail());
         document.getElementById('confirmJoinBtn')?.addEventListener('click', () => this.confirmJoin());
         document.getElementById('cancelJoinBtn')?.addEventListener('click', () => this.cancelJoin());
         document.getElementById('toggleAudioBtn')?.addEventListener('click', () => this.toggleAudio());
@@ -1606,6 +1608,21 @@ class ProctoringApp {
                 .then(() => this.showMessage('✅ Link copied to clipboard', 'success'))
                 .catch(() => this.showMessage('❌ Failed to copy link', 'error'));
         }
+    }
+    
+    shareWhatsApp() {
+        const link = document.getElementById('shareLink')?.value;
+        if (!link) return;
+        const text = encodeURIComponent(`Join the Zed Stream session:\n${link}`);
+        window.open(`https://wa.me/?text=${text}`, '_blank');
+    }
+    
+    shareEmail() {
+        const link = document.getElementById('shareLink')?.value;
+        if (!link) return;
+        const subject = encodeURIComponent('Join Zed Stream Session');
+        const body = encodeURIComponent(`You are invited to join the Zed Stream session.\n\nClick the link below to join:\n${link}`);
+        window.open(`mailto:?subject=${subject}&body=${body}`, '_self');
     }
     
     endCall() {

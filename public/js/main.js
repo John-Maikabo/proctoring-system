@@ -255,6 +255,11 @@ class ProctoringApp {
         }
         
         console.log('✅ All events bound');
+
+        window.addEventListener('resize', () => {
+            clearTimeout(this._resizeTimer);
+            this._resizeTimer = setTimeout(() => this.calculateGridLayout(), 250);
+        });
     }
     
     updateStatus(text, state = '') {
@@ -489,6 +494,7 @@ class ProctoringApp {
                 }
                 
                 this.updateParticipantList();
+                setTimeout(() => this.calculateGridLayout(), 200);
                 this.showMessage(`✅ Connected as ${this.userName}`, 'success');
                 
                 // If we already have local stream, connect to existing participants
@@ -514,6 +520,7 @@ class ProctoringApp {
                 });
                 
                 this.updateParticipantList();
+                setTimeout(() => this.calculateGridLayout(), 200);
                 this.showMessage(`👤 ${data.userName} joined`, 'success');
                 
                 // Connect to the new participant if we have local stream
@@ -568,6 +575,7 @@ class ProctoringApp {
                 this.participants.delete(data.userId);
                 this.updateParticipantList();
                 this.showMessage(`👤 ${data.userName} left`, 'info');
+                setTimeout(() => this.calculateGridLayout(), 200);
                 
                 if (this.peerConnections.has(data.userId)) {
                     this.peerConnections.get(data.userId).close();
@@ -622,6 +630,69 @@ class ProctoringApp {
         }
     }
     
+    calculateGridLayout() {
+        const count = this.participants.size;
+        const root = document.documentElement;
+
+        if (count === 0) {
+            root.style.setProperty('--tile-h', '0px');
+            root.style.setProperty('--grid-cols', '1');
+            root.style.setProperty('--local-vh', window.innerWidth <= 768 ? '180px' : '280px');
+            return;
+        }
+
+        const isMobile = window.innerWidth <= 768;
+
+        // Fixed elements height
+        const fixedMargin = isMobile ? 60 : 80;
+        const localH = isMobile ? 180 : 280;
+        const chatH = 220;
+        const headH = 80;
+        const controlsH = isMobile ? 60 : 70;
+
+        const availH = window.innerHeight - fixedMargin - localH - chatH - headH - controlsH;
+        const panel = document.querySelector('.video-panel');
+        const availW = panel ? panel.clientWidth - 40 : window.innerWidth - (isMobile ? 30 : 400);
+
+        const usableH = Math.max(availH, isMobile ? 80 : 100);
+        const usableW = Math.max(availW, isMobile ? 150 : 200);
+
+        let bestCols = 1;
+        let bestH = 0;
+
+        for (let cols = 1; cols <= count; cols++) {
+            const rows = Math.ceil(count / cols);
+            const cellW = usableW / cols;
+            const cellH = usableH / rows;
+            const h = Math.min(cellH, cellW / (16 / 9));
+            if (h > bestH) {
+                bestH = h;
+                bestCols = cols;
+            }
+        }
+
+        const rows = Math.ceil(count / bestCols);
+        let tileH = Math.min(usableH / rows, usableW / bestCols / (16 / 9));
+        tileH = Math.max(Math.floor(tileH), isMobile ? 80 : 100);
+
+        // Scale fonts based on tile height
+        const hdrFs = tileH > 140 ? '0.85rem' : tileH > 100 ? '0.7rem' : '0.6rem';
+        const hdrPd = tileH > 140 ? '8px 12px' : '4px 8px';
+        const stsFs = tileH > 140 ? '0.75rem' : '0.65rem';
+        const stsPd = tileH > 140 ? '6px 10px' : '3px 6px';
+
+        root.style.setProperty('--tile-h', `${tileH}px`);
+        root.style.setProperty('--tile-min-h', `${tileH}px`);
+        root.style.setProperty('--grid-cols', bestCols);
+        root.style.setProperty('--hdr-fs', hdrFs);
+        root.style.setProperty('--hdr-pd', hdrPd);
+        root.style.setProperty('--sts-fs', stsFs);
+        root.style.setProperty('--sts-pd', stsPd);
+        root.style.setProperty('--local-vh', `${localH}px`);
+
+        console.log(`[Grid] ${count} participants | ${bestCols} cols | ${tileH}px per tile | ${isMobile ? 'mobile' : 'desktop'}`);
+    }
+
     updateParticipantList() {
         const count = this.participants.size + 1;
         document.getElementById('participantCount').textContent = count;
@@ -1057,8 +1128,9 @@ class ProctoringApp {
             videoContainer.appendChild(videoElement);
             videoContainer.appendChild(statusBar);
             remoteVideosContainer.appendChild(videoContainer);
-            
+
             console.log(`✅ Video container created for ${peerName}`);
+            setTimeout(() => this.calculateGridLayout(), 100);
         }
         
         // Update video element reference

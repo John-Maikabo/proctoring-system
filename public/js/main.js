@@ -637,8 +637,9 @@ class ProctoringApp {
         const root = document.documentElement;
 
         if (count === 0) {
-            root.style.setProperty('--tile-h', '0px');
-            root.style.setProperty('--grid-cols', '1');
+            root.style.removeProperty('--tile-h');
+            root.style.removeProperty('--grid-cols');
+            root.style.removeProperty('--tile-min-h');
             root.style.setProperty('--local-vh', window.innerWidth <= 768 ? '180px' : '280px');
             return;
         }
@@ -1096,13 +1097,6 @@ class ProctoringApp {
             videoContainer = document.createElement('div');
             videoContainer.className = 'remote-video-container';
             videoContainer.id = `remoteVideoContainer-${peerId}`;
-            videoContainer.style.cssText = `
-                position: relative;
-                background: black;
-                border-radius: 10px;
-                overflow: hidden;
-                min-height: 250px;
-            `;
             
             // Create header
             const header = document.createElement('div');
@@ -1155,30 +1149,36 @@ class ProctoringApp {
         // Set stream as source
         videoElement.srcObject = stream;
         
-        // Force play immediately
+        // Remove all previous listeners
+        videoElement.onloadedmetadata = null;
+        videoElement.onplaying = null;
+        
+        // Force play
+        videoElement.muted = false;
         videoElement.play().catch(e => {
             console.log(`⚠️ Initial play error for ${peerName}:`, e.message);
+            // Fallback to muted if autoplay blocked
+            videoElement.muted = true;
+            videoElement.play().catch(e2 => console.log(`Muted play error for ${peerName}:`, e2.message));
         });
         
-        // Track events
-        if (stream.getVideoTracks()[0]) {
-            stream.getVideoTracks()[0].onended = () => {
-                console.log(`⏹️ Video track ended for ${peerName}`);
-            };
-        }
+        // Force reflow
+        void videoElement.offsetHeight;
         
         // Video element events
         videoElement.onloadedmetadata = () => {
             console.log(`✅ Video metadata loaded for ${peerName}`);
             console.log(`📏 Dimensions: ${videoElement.videoWidth}x${videoElement.videoHeight}`);
-            
-            // Force play again after metadata
-            videoElement.play().catch(e => console.log(`Metadata play error:`, e));
+            videoElement.play().catch(e => console.log(`Metadata play error:`, e.message));
         };
         
         videoElement.onplaying = () => {
             console.log(`▶️ Video is playing for ${peerName}`);
-            videoElement.style.border = '2px solid #28a745';
+        };
+        
+        videoElement.onpause = () => {
+            console.log(`⏸️ Video paused for ${peerName}, retrying play`);
+            videoElement.play().catch(() => {});
         };
         
         // Monitor dimensions

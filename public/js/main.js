@@ -19,7 +19,8 @@ class ProctoringApp {
         this.isRecording = false;
         this.snapshots = [];
         this.remoteStreams = new Map();
-        this.twilioTurnServers = null; // Store Twilio servers
+        this.twilioTurnServers = null;
+        this._playTimers = {};
         
         // Check for existing proctor session
         this.checkSavedProctorSession();
@@ -1043,7 +1044,6 @@ class ProctoringApp {
     processRemoteTrack(peerId, peerName, peerType, event) {
         console.log(`🎬 Processing remote track for ${peerName}`);
         
-        // Get or create stream for this peer
         let stream = this.remoteStreams.get(peerId);
         if (!stream) {
             stream = new MediaStream();
@@ -1051,33 +1051,36 @@ class ProctoringApp {
             console.log(`✅ Created new stream for ${peerName}`);
         }
         
-        // Add track to stream if not already present
         const existingTrack = stream.getTracks().find(t => t.id === event.track.id);
         if (!existingTrack && event.track) {
-            // Remove old tracks of same kind
             const oldTracks = stream.getTracks().filter(t => t.kind === event.track.kind);
             oldTracks.forEach(track => {
                 console.log(`➖ Removing old ${track.kind} track`);
                 stream.removeTrack(track);
             });
             
-            // Add new track
             stream.addTrack(event.track);
             console.log(`➕ Added ${event.track.kind} track. Total tracks: ${stream.getTracks().length}`);
         }
         
-        // Ensure video container exists
         this.ensureVideoContainer(peerId, peerName, peerType, stream);
         
-        // Force video to play when tracks arrive (even if container already exists)
-        setTimeout(() => {
-            const videoEl = document.getElementById(`remoteVideo-${peerId}`);
-            if (videoEl && videoEl.srcObject && stream.getVideoTracks().length > 0) {
-                videoEl.play().then(() => {
-                    console.log(`▶️ Video playing for ${peerName}`);
-                }).catch(e => console.log(`Play attempt for ${peerName}:`, e.message));
-            }
-        }, 200);
+        // Only try playing when both audio and video tracks are present
+        if (stream.getVideoTracks().length > 0 && stream.getAudioTracks().length > 0) {
+            if (this._playTimers[peerId]) clearTimeout(this._playTimers[peerId]);
+            this._playTimers[peerId] = setTimeout(() => {
+                const videoEl = document.getElementById(`remoteVideo-${peerId}`);
+                if (videoEl && videoEl.srcObject && stream.getVideoTracks().length > 0 && videoEl.readyState >= 2) {
+                    videoEl.play().then(() => {
+                        console.log(`▶️ Video playing for ${peerName}`);
+                    }).catch(e => {
+                        console.log(`Play attempt for ${peerName}:`, e.message);
+                        videoEl.muted = true;
+                        videoEl.play().catch(e2 => console.log(`Muted play for ${peerName}:`, e2.message));
+                    });
+                }
+            }, 500);
+        }
     }
     
     ensureVideoContainer(peerId, peerName, peerType, stream) {
@@ -1146,50 +1149,11 @@ class ProctoringApp {
             return;
         }
         
-        // Set stream as source
-        videoElement.srcObject = stream;
-        
-        // Remove all previous listeners
-        videoElement.onloadedmetadata = null;
-        videoElement.onplaying = null;
-        
-        // Force play
-        videoElement.muted = false;
-        videoElement.play().catch(e => {
-            console.log(`⚠️ Initial play error for ${peerName}:`, e.message);
-            // Fallback to muted if autoplay blocked
-            videoElement.muted = true;
-            videoElement.play().catch(e2 => console.log(`Muted play error for ${peerName}:`, e2.message));
-        });
-        
-        // Force reflow
-        void videoElement.offsetHeight;
-        
-        // Video element events
-        videoElement.onloadedmetadata = () => {
-            console.log(`✅ Video metadata loaded for ${peerName}`);
-            console.log(`📏 Dimensions: ${videoElement.videoWidth}x${videoElement.videoHeight}`);
-            videoElement.play().catch(e => console.log(`Metadata play error:`, e.message));
-        };
-        
-        videoElement.onplaying = () => {
-            console.log(`▶️ Video is playing for ${peerName}`);
-        };
-        
-        videoElement.onpause = () => {
-            console.log(`⏸️ Video paused for ${peerName}, retrying play`);
-            videoElement.play().catch(() => {});
-        };
-        
-        // Monitor dimensions
-        const checkDimensions = setInterval(() => {
-            if (videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
-                console.log(`📐 ${peerName} video: ${videoElement.videoWidth}x${videoElement.videoHeight}`);
-                clearInterval(checkDimensions);
-            }
-        }, 1000);
-        
-        setTimeout(() => clearInterval(checkDimensions), 10000);
+        // Only set srcObject when container is newly created or stream ID changes
+        if (!videoElement.srcObject || videoElement.srcObject.id !== stream.id) {
+            console.log(`🎬 Setting video source for ${peerName}`);
+            videoElement.srcObject = stream;
+        }
     }
     
     removeRemoteVideo(peerId) {

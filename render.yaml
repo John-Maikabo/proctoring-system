@@ -8,3 +8,9 @@ services:
     envVars: 
       - key: NODE_ENV 
         value: production 
+      - key: TWILIO_ACCOUNT_SID 
+        sync: false 
+      - key: TWILIO_API_KEY_SID 
+        sync: false 
+      - key: TWILIO_API_KEY_SECRET 
+        sync: false 

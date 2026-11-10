@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -5,6 +6,7 @@ const path = require('path');
 const twilio = require('twilio');  // Add Twilio for TURN servers
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -275,8 +277,8 @@ wss.on('connection', (ws, req) => {
         }
     }
     
-    // Check room capacity
-    const maxCapacity = 1 + room.maxParticipants;
+    // Check room capacity (proctor counts toward the advertised limit)
+    const maxCapacity = room.maxParticipants;
     if (room.participants.size >= maxCapacity) {
         console.log('Room is full:', roomId);
         ws.close(1008, 'Room is full');
@@ -294,8 +296,14 @@ wss.on('connection', (ws, req) => {
         isScreenSharing: false
     };
     
-    connections.set(userId, connection);
+    connections.set(connectionKey(roomId, userId), connection);
     room.participants.set(userId, connection);
+    
+    if (userType === 'proctor' && room.proctorGraceTimer) {
+        clearTimeout(room.proctorGraceTimer);
+        room.proctorGraceTimer = null;
+        console.log(`Proctor rejoined room ${roomId}; grace period cancelled`);
+    }
     
     console.log(`${userName} (${userId}) joined room ${roomId} as ${userType}`);
     console.log(`Room ${roomId} now has ${room.participants.size} participants`);
@@ -387,45 +395,67 @@ wss.on('connection', (ws, req) => {
     ws.on('close', () => {
         console.log(`${userName} (${userId}) disconnected from room ${roomId}`);
         
-        // Remove from room
-        if (room) {
-            room.participants.delete(userId);
+        // A reconnect may already have replaced this socket; ignore the stale close
+        if (!room || room.participants.get(userId) !== connection) {
+            if (connections.get(connectionKey(roomId, userId)) === connection) {
+                connections.delete(connectionKey(roomId, userId));
+            }
+            console.log(`Ignoring stale close for ${userName} (${userId})`);
+            return;
+        }
+        
+        room.participants.delete(userId);
+        if (connections.get(connectionKey(roomId, userId)) === connection) {
+            connections.delete(connectionKey(roomId, userId));
+        }
+        
+        // Notify all others
+        broadcastToRoom(roomId, userId, {
+            type: 'user-left',
+            userId: userId,
+            userName: userName,
+            userType: userType,
+            participants: Array.from(room.participants.values()).map(conn => ({
+                id: conn.userId,
+                type: conn.userType,
+                name: conn.userName
+            })),
+            participantCount: room.participants.size,
+            timestamp: Date.now()
+        });
+        
+        // If the proctor leaves, hold the session open briefly in case they reconnect
+        if (userType === 'proctor') {
+            if (room.proctorGraceTimer) clearTimeout(room.proctorGraceTimer);
             
-            // Notify all others
-            broadcastToRoom(roomId, userId, {
-                type: 'user-left',
-                userId: userId,
-                userName: userName,
-                userType: userType,
-                participants: Array.from(room.participants.values()).map(conn => ({
-                    id: conn.userId,
-                    type: conn.userType,
-                    name: conn.userName
-                })),
-                participantCount: room.participants.size,
-                timestamp: Date.now()
-            });
-            
-            // If proctor leaves, notify everyone
-            if (userType === 'proctor') {
+            room.proctorGraceTimer = setTimeout(() => {
+                room.proctorGraceTimer = null;
+                const currentRoom = rooms.get(roomId);
+                if (!currentRoom) return;
+                
+                const proctorPresent = Array.from(currentRoom.participants.values())
+                    .some(p => p.userType === 'proctor');
+                if (proctorPresent) {
+                    console.log(`Proctor returned to room ${roomId}; session kept alive`);
+                    return;
+                }
+                
                 broadcastToRoom(roomId, userId, {
                     type: 'proctor-left',
                     message: 'Proctor left the session',
                     timestamp: Date.now()
                 });
-                
-                // Clean up room after 1 minute if empty
-                setTimeout(() => {
-                    if (rooms.get(roomId)?.participants.size === 0) {
-                        rooms.delete(roomId);
-                        console.log(`Room ${roomId} cleaned up`);
-                    }
-                }, 60000);
-            }
+                console.log(`Proctor did not return to room ${roomId}; notified participants`);
+            }, 30000);
+            
+            // Clean up room after 1 minute if empty
+            setTimeout(() => {
+                if (rooms.get(roomId)?.participants.size === 0) {
+                    rooms.delete(roomId);
+                    console.log(`Room ${roomId} cleaned up`);
+                }
+            }, 60000);
         }
-        
-        // Remove connection
-        connections.delete(userId);
     });
     
     // Handle errors
@@ -442,7 +472,7 @@ function handleMessage(roomId, senderId, data) {
         return;
     }
     
-    const sender = connections.get(senderId);
+    const sender = connections.get(connectionKey(roomId, senderId));
     if (!sender) {
         console.log(`Sender ${senderId} not found in connections`);
         return;
@@ -456,7 +486,7 @@ function handleMessage(roomId, senderId, data) {
         case 'candidate':
             // Forward signaling data to specific peer
             if (data.targetPeerId) {
-                const targetConn = connections.get(data.targetPeerId);
+                const targetConn = connections.get(connectionKey(roomId, data.targetPeerId));
                 if (targetConn && targetConn.ws.readyState === WebSocket.OPEN) {
                     console.log(`📨 Forwarding ${data.type} from ${sender.userName} to ${targetConn.userName}`);
                     
@@ -560,6 +590,11 @@ function generateRoomId() {
 // Generate random user ID
 function generateUserId() {
     return 'user_' + Math.random().toString(36).substring(2, 10);
+}
+
+// Connections are scoped per room so the same user ID can exist in several rooms
+function connectionKey(roomId, userId) {
+    return `${roomId}:${userId}`;
 }
 
 // ==================== START SERVER ====================

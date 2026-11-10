@@ -7,7 +7,7 @@ class ProctoringApp {
         this.screenStream = null;
         this.signaling = null;
         this.roomId = null;
-        this.userId = 'user_' + Math.random().toString(36).substring(2, 10);
+        this.userId = this.getOrCreateUserId();
         this.userType = null;
         this.userName = '';
         this.isAudioMuted = false;
@@ -21,6 +21,13 @@ class ProctoringApp {
         this.remoteStreams = new Map();
         this.twilioTurnServers = null;
         this._playTimers = {};
+        this._turnServersPromise = Promise.resolve();
+        this._signalingUrl = null;
+        this._intentionalClose = false;
+        this._reconnecting = false;
+        this._reconnectAttempts = 0;
+        this._reconnectTimer = null;
+        this._heartbeatTimer = null;
         
         // Check for existing proctor session
         this.checkSavedProctorSession();
@@ -30,6 +37,15 @@ class ProctoringApp {
         } else {
             this.init();
         }
+    }
+    
+    getOrCreateUserId() {
+        let id = localStorage.getItem('zedUserId');
+        if (!id) {
+            id = 'user_' + Math.random().toString(36).substring(2, 10);
+            localStorage.setItem('zedUserId', id);
+        }
+        return id;
     }
     
     checkSavedProctorSession() {
@@ -59,8 +75,8 @@ class ProctoringApp {
     async init() {
         console.log('🔧 App init called');
         
-        // Fetch TURN servers early (critical for cross-network)
-        await this.fetchTurnServers();
+        // TURN servers are fetched in the background so the UI is never blocked
+        this._turnServersPromise = this.fetchTurnServers();
         
         setTimeout(() => {
             this.bindEvents();
@@ -410,7 +426,26 @@ class ProctoringApp {
         this.cancelJoin();
     }
     
-    joinExistingRoom() {
+    async joinExistingRoom() {
+        try {
+            const response = await fetch(`/api/validate-room/${encodeURIComponent(this.roomId)}`);
+            if (!response.ok) {
+                this.updateStatus('Session not found', 'disconnected');
+                this.showMessage(`❌ Session ${this.roomId} not found. Check the ID or ask for a new link.`, 'error');
+                return;
+            }
+        } catch (error) {
+            this.updateStatus('Connection error', 'disconnected');
+            this.showMessage('❌ Could not reach the server: ' + error.message, 'error');
+            return;
+        }
+        
+        // Wait briefly for TURN credentials, then continue with fallbacks
+        await Promise.race([
+            this._turnServersPromise,
+            new Promise(resolve => setTimeout(resolve, 4000))
+        ]);
+        
         this.updateRoomUI();
         this.updateStatus('Joined session', 'connected');
         this.showMessage('✅ Joined as ' + this.userName, 'success');
@@ -436,18 +471,42 @@ class ProctoringApp {
         
         // FIXED: Use correct protocol and host (no port 3000)
         const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        const wsUrl = `${wsProtocol}${window.location.host}?room=${this.roomId}&userId=${this.userId}&type=${wsType}&name=${encodeURIComponent(this.userName)}`;
-        console.log('🔌 Connecting to WebSocket:', wsUrl);
+        this._signalingUrl = `${wsProtocol}${window.location.host}?room=${this.roomId}&userId=${this.userId}&type=${wsType}&name=${encodeURIComponent(this.userName)}`;
         
-        this.signaling = new WebSocket(wsUrl);
+        this._intentionalClose = false;
+        this._reconnecting = false;
+        this._reconnectAttempts = 0;
         
-        this.signaling.onopen = () => {
+        if (this.signaling) {
+            try {
+                this.signaling.close();
+            } catch (error) {
+                console.warn('Error closing previous socket:', error.message);
+            }
+            this.signaling = null;
+        }
+        
+        this.openSignaling();
+    }
+    
+    openSignaling() {
+        console.log('🔌 Connecting to WebSocket:', this._signalingUrl);
+        
+        const ws = new WebSocket(this._signalingUrl);
+        this.signaling = ws;
+        
+        ws.onopen = () => {
             console.log('✅ WebSocket connected');
+            const wasReconnecting = this._reconnecting;
+            this._reconnecting = false;
+            this._reconnectAttempts = 0;
+            
             this.updateStatus('Connected to server', 'connected');
-            this.showMessage('Connected to signaling server', 'success');
+            this.showMessage(wasReconnecting ? '🔄 Reconnected to server' : 'Connected to signaling server', 'success');
+            this.startHeartbeat();
         };
         
-        this.signaling.onmessage = (event) => {
+        ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
                 console.log('📨 WebSocket message received:', data.type);
@@ -457,17 +516,93 @@ class ProctoringApp {
             }
         };
         
-        this.signaling.onclose = () => {
-            console.log('🔌 WebSocket disconnected');
-            this.updateStatus('Server disconnected', 'disconnected');
-            this.showMessage('Disconnected from server', 'error');
+        ws.onclose = (event) => {
+            if (this.signaling !== ws) {
+                console.log('🔌 Ignoring close of superseded socket');
+                return;
+            }
+            
+            console.log('🔌 WebSocket disconnected:', event.code, event.reason);
+            this.stopHeartbeat();
+            this.signaling = null;
+            
+            if (this._intentionalClose) {
+                this.updateStatus('Disconnected', 'disconnected');
+                return;
+            }
+            
+            if (event.code === 1008) {
+                this.updateStatus('Session unavailable', 'disconnected');
+                this.showMessage('❌ Server closed the session: ' + (event.reason || 'unavailable'), 'error');
+                return;
+            }
+            
+            this.scheduleReconnect();
         };
         
-        this.signaling.onerror = (error) => {
+        ws.onerror = (error) => {
             console.error('❌ WebSocket error:', error);
-            this.updateStatus('Connection error', 'disconnected');
-            this.showMessage('WebSocket connection error', 'error');
         };
+    }
+    
+    scheduleReconnect() {
+        if (this._reconnectTimer) return;
+        if (!this.roomId) return;
+        
+        if (this._reconnectAttempts >= 5) {
+            this.updateStatus('Reconnect failed', 'disconnected');
+            this.showMessage('❌ Lost connection to the server. Reload the page to rejoin.', 'error');
+            return;
+        }
+        
+        const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 15000);
+        this._reconnectAttempts++;
+        this.updateStatus(`Reconnecting (${this._reconnectAttempts}/5)...`, 'connecting');
+        
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            this._reconnecting = true;
+            this.teardownPeers();
+            this.openSignaling();
+        }, delay);
+    }
+    
+    teardownPeers() {
+        Object.values(this._playTimers).forEach(timer => clearTimeout(timer));
+        this._playTimers = {};
+        
+        this.peerConnections.forEach(peerConnection => {
+            try {
+                peerConnection.close();
+            } catch (error) {
+                console.warn('Error closing peer connection:', error.message);
+            }
+        });
+        this.peerConnections.clear();
+        this.remoteStreams.clear();
+        this.participants.clear();
+        
+        const remoteVideosContainer = document.getElementById('remoteVideosContainer');
+        if (remoteVideosContainer) remoteVideosContainer.innerHTML = '';
+        
+        this.updateParticipantList();
+        this.calculateGridLayout();
+    }
+    
+    startHeartbeat() {
+        this.stopHeartbeat();
+        this._heartbeatTimer = setInterval(() => {
+            if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+                this.signaling.send(JSON.stringify({ type: 'ping' }));
+            }
+        }, 20000);
+    }
+    
+    stopHeartbeat() {
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
     }
     
     handleSignalingMessage(data) {
@@ -626,6 +761,9 @@ class ProctoringApp {
             case 'proctor-left':
                 this.showMessage('❌ Proctor left the session', 'error');
                 this.endCall();
+                break;
+                
+            case 'pong':
                 break;
                 
             default:
@@ -869,6 +1007,11 @@ class ProctoringApp {
         console.log('📊 ICE Servers configured:', config.iceServers);
         
         const peerConnection = new RTCPeerConnection(config);
+        // Perfect-negotiation state: exactly one side wins an offer collision
+        peerConnection._polite = this.userId < peerId;
+        peerConnection._ignoreOffer = false;
+        peerConnection._pendingCandidates = [];
+        peerConnection._offerSeq = 0;
         this.peerConnections.set(peerId, peerConnection);
         
         console.log(`✅ PeerConnection created for ${peerName} with TURN support`);
@@ -948,6 +1091,8 @@ class ProctoringApp {
                 setTimeout(() => {
                     if (this.localStream) {
                         console.log(`🔄 Reconnecting to ${peerName}`);
+                        const failedPc = this.peerConnections.get(peerId);
+                        if (failedPc) failedPc.close();
                         this.peerConnections.delete(peerId);
                         this.connectToPeer(peerId, peerName, peerType);
                     }
@@ -1019,8 +1164,9 @@ class ProctoringApp {
             }
         };
         
-        // Create offer immediately
-        setTimeout(() => {
+        // Initial offer; cancelled if the peer's offer arrives first
+        peerConnection._autoOfferTimer = setTimeout(() => {
+            peerConnection._autoOfferTimer = null;
             this.createOfferForPeer(peerId);
         }, 500);
         
@@ -1196,7 +1342,13 @@ class ProctoringApp {
                 return;
             }
             
+            if (peerConnection.signalingState !== 'stable') {
+                console.log(`⏭️ Skipping offer for ${peerId}, signaling state: ${peerConnection.signalingState}`);
+                return;
+            }
+            
             console.log(`📝 Creating offer for ${peerId}`);
+            const offerSeq = ++peerConnection._offerSeq;
             
             const offerOptions = {
                 offerToReceiveAudio: true,
@@ -1204,6 +1356,13 @@ class ProctoringApp {
             };
             
             const offer = await peerConnection.createOffer(offerOptions);
+            
+            // A remote offer may have been adopted while we were creating this one
+            if (offerSeq !== peerConnection._offerSeq || peerConnection.signalingState !== 'stable') {
+                console.log(`⏭️ Discarding stale offer for ${peerId}`);
+                return;
+            }
+            
             console.log('✅ Offer created');
             
             await peerConnection.setLocalDescription(offer);
@@ -1254,12 +1413,35 @@ class ProctoringApp {
                 }
             }
             
+            // Glare resolution: an offer collision is won by the impolite peer
+            const collision = peerConnection.signalingState !== 'stable';
+            peerConnection._ignoreOffer = !peerConnection._polite && collision;
+            
+            if (peerConnection._ignoreOffer) {
+                console.log(`⚠️ Ignoring colliding offer from ${data.senderName}`);
+                return;
+            }
+            
+            clearTimeout(peerConnection._autoOfferTimer);
+            peerConnection._autoOfferTimer = null;
+            
+            if (collision) {
+                console.log(`↩️ Rolling back local offer to accept offer from ${data.senderName}`);
+                await peerConnection.setLocalDescription({ type: 'rollback' });
+            }
+            
+            // Invalidate any offer that is still being created asynchronously
+            peerConnection._offerSeq++;
+            
             await peerConnection.setRemoteDescription(new RTCSessionDescription({
                 type: 'offer',
                 sdp: data.sdp
             }));
+            peerConnection._ignoreOffer = false;
             
             console.log('✅ Remote description set');
+            
+            await this.flushPendingCandidates(data.senderId);
             
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
@@ -1290,6 +1472,7 @@ class ProctoringApp {
                     sdp: data.sdp
                 }));
                 console.log('✅ Answer processed');
+                await this.flushPendingCandidates(data.senderId);
             } else {
                 console.error('❌ No peer connection for', data.senderId);
             }
@@ -1300,17 +1483,42 @@ class ProctoringApp {
     
     async handleCandidate(data) {
         try {
-            console.log(`🧊 Handling ICE candidate from ${data.senderName}`);
-            
             const peerConnection = this.peerConnections.get(data.senderId);
-            if (peerConnection && data.candidate) {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                console.log('✅ ICE candidate added');
-            } else {
+            if (!peerConnection || !data.candidate) {
                 console.error('❌ No peer connection or candidate for', data.senderId);
+                return;
             }
+            
+            if (!peerConnection.remoteDescription) {
+                peerConnection._pendingCandidates.push(data.candidate);
+                console.log(`⏳ Queued ICE candidate for ${data.senderName} until remote description is set`);
+                return;
+            }
+            
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            console.log('✅ ICE candidate added');
         } catch (error) {
             console.error('❌ Error handling candidate:', error);
+        }
+    }
+    
+    async flushPendingCandidates(peerId) {
+        const peerConnection = this.peerConnections.get(peerId);
+        if (!peerConnection || !peerConnection.remoteDescription) return;
+        
+        const pending = peerConnection._pendingCandidates || [];
+        peerConnection._pendingCandidates = [];
+        
+        for (const candidate of pending) {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (error) {
+                console.warn(`⚠️ Failed to add queued ICE candidate for ${peerId}:`, error.message);
+            }
+        }
+        
+        if (pending.length > 0) {
+            console.log(`🧊 Flushed ${pending.length} queued ICE candidate(s) for ${peerId}`);
         }
     }
     
@@ -1399,11 +1607,10 @@ class ProctoringApp {
     toggleAudio() {
         if (!this.localStream) return;
         
-        const audioTracks = this.localStream.getAudioTracks();
-        if (audioTracks.length > 0) {
-            const audioTrack = audioTracks[0];
+        const audioTrack = this.localStream.getAudioTracks()[0];
+        if (audioTrack) {
+            audioTrack.enabled = !audioTrack.enabled;
             this.isAudioMuted = !audioTrack.enabled;
-            audioTrack.enabled = !this.isAudioMuted;
             
             const audioBtn = document.getElementById('toggleAudioBtn');
             if (audioBtn) {
@@ -1422,8 +1629,8 @@ class ProctoringApp {
         
         const videoTrack = this.localStream.getVideoTracks()[0];
         if (videoTrack) {
+            videoTrack.enabled = !videoTrack.enabled;
             this.isVideoHidden = !videoTrack.enabled;
-            videoTrack.enabled = !this.isVideoHidden;
             
             const videoBtn = document.getElementById('toggleVideoBtn');
             if (videoBtn) {
@@ -1493,9 +1700,14 @@ class ProctoringApp {
                 }
                 
                 this.recordedChunks = [];
-                this.mediaRecorder = new MediaRecorder(this.localStream, {
-                    mimeType: 'video/webm;codecs=vp9,opus'
-                });
+                const mimeTypes = [
+                    'video/webm;codecs=vp9,opus',
+                    'video/webm;codecs=vp8,opus',
+                    'video/webm',
+                    'video/mp4'
+                ];
+                const mimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+                this.mediaRecorder = new MediaRecorder(this.localStream, mimeType ? { mimeType } : undefined);
                 
                 this.mediaRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) {
@@ -1504,11 +1716,13 @@ class ProctoringApp {
                 };
                 
                 this.mediaRecorder.onstop = () => {
-                    const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+                    const type = this.mediaRecorder.mimeType || 'video/webm';
+                    const extension = type.includes('mp4') ? 'mp4' : 'webm';
+                    const blob = new Blob(this.recordedChunks, { type });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `recording-${this.roomId}-${Date.now()}.webm`;
+                    a.download = `recording-${this.roomId}-${Date.now()}.${extension}`;
                     a.click();
                     URL.revokeObjectURL(url);
                     
@@ -1619,6 +1833,14 @@ class ProctoringApp {
     }
     
     endCall() {
+        this._intentionalClose = true;
+        this._reconnecting = false;
+        this.stopHeartbeat();
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
@@ -1670,11 +1892,23 @@ class ProctoringApp {
         this.updateStatus('Call ended', 'disconnected');
         this.showMessage('📞 Call ended', 'info');
         
-        if (this.userType === 'proctor' && this.signaling) {
-            this.signaling.send(JSON.stringify({
-                type: 'proctor-left'
-            }));
-        }
+        this.isAudioMuted = false;
+        this.isVideoHidden = false;
+        this.isScreenSharing = false;
+        
+        const createBtn = document.getElementById('createRoomBtn');
+        if (createBtn) createBtn.style.display = '';
+        
+        const audioBtn = document.getElementById('toggleAudioBtn');
+        if (audioBtn) audioBtn.innerHTML = '<i class="fas fa-microphone"></i> Mute Audio';
+        const videoBtn = document.getElementById('toggleVideoBtn');
+        if (videoBtn) videoBtn.innerHTML = '<i class="fas fa-video"></i> Hide Video';
+        const recordBtn = document.getElementById('recordBtn');
+        if (recordBtn) recordBtn.innerHTML = '<i class="fas fa-circle"></i> Start Recording';
+        const audioStatus = document.getElementById('audioStatus');
+        if (audioStatus) audioStatus.textContent = 'On';
+        const videoStatus = document.getElementById('videoStatus');
+        if (videoStatus) videoStatus.textContent = 'On';
         
         // Clear proctor session if ending
         if (this.userType === 'proctor') {
@@ -1755,8 +1989,12 @@ class ProctoringApp {
 window.addEventListener('load', () => {
     console.log('🚀 Loading ProctoringApp...');
     window.proctoringApp = new ProctoringApp();
+    console.log('✅ ProctoringApp loaded successfully');
     
-    // Add debug command to window
+    // Diagnostics are opt-in: append ?debug to the URL
+    const DEBUG = new URLSearchParams(window.location.search).has('debug');
+    if (!DEBUG) return;
+    
     window.debugRTC = () => {
         if (window.proctoringApp) {
             window.proctoringApp.debugWebRTC();
@@ -1789,42 +2027,15 @@ window.addEventListener('load', () => {
         }
     };
     
-    // Force video visibility
-    window.makeVideosVisible = () => {
-        document.querySelectorAll('.remote-video').forEach(video => {
-            video.style.cssText = `
-                display: block !important;
-                width: 100% !important;
-                height: 100% !important;
-                background: black !important;
-                border: 3px solid red !important;
-                object-fit: cover !important;
-            `;
-        });
-        
-        document.querySelectorAll('.remote-video-container').forEach(container => {
-            container.style.cssText = `
-                display: block !important;
-                min-height: 250px !important;
-                background: black !important;
-                border: 2px solid blue !important;
-            `;
-        });
-        
-        console.log('✅ Forced all videos to be visible');
-    };
-    
     // Test TURN servers
     window.testTurnServers = async () => {
         if (window.proctoringApp) {
-            const app = window.proctoringApp;
             console.log('=== TESTING TURN SERVERS ===');
             
             const response = await fetch('/api/turn-config');
             const data = await response.json();
             console.log('API Response:', data);
             
-            // Test creating a peer connection
             const pc = new RTCPeerConnection({
                 iceServers: data.iceServers || []
             });
@@ -1855,5 +2066,5 @@ window.addEventListener('load', () => {
         }
     }, 10000);
     
-    console.log('✅ ProctoringApp loaded successfully');
+    console.log('✅ Debug helpers enabled: debugRTC(), checkVideos(), testTurnServers()');
 });

@@ -4,5 +4,4 @@ node_modules/
 npm-debug.log* 
 .DS_Store 
 server.js.backup 
-package-lock.json 
 server/ 

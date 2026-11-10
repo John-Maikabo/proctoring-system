@@ -136,13 +136,13 @@
             }
             
             // Redirect to main app with room ID
-            window.location.href = `/?room=${roomId}&type=receiver`;
+            window.location.href = `/?room=${roomId}&type=candidate`;
         }
         
         function startRealSession() {
             const roomId = document.getElementById('roomId').value.trim().toUpperCase();
             if (roomId) {
-                window.location.href = `/?room=${roomId}&type=receiver`;
+                window.location.href = `/?room=${roomId}&type=candidate`;
             }
         }
         

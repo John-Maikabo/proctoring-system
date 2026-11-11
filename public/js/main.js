@@ -925,6 +925,12 @@ class ProctoringApp {
             // Connect to all existing participants
             console.log(`🔗 Connecting to ${this.participants.size} existing participants`);
             
+            // Peer connections created by incoming offers need the new tracks too
+            this.peerConnections.forEach((pc, peerId) => {
+                const participant = this.participants.get(peerId);
+                this.renegotiateMissingTracks(peerId, participant ? participant.name : peerId);
+            });
+            
             // Add a delay to ensure local stream is fully ready
             setTimeout(() => {
                 this.participants.forEach((participant, userId) => {
@@ -957,9 +963,10 @@ class ProctoringApp {
             return;
         }
         
-        // Check if connection already exists
+        // An incoming offer may have created this connection before the camera
+        // started, leaving it without local tracks. Publish them now.
         if (this.peerConnections.has(peerId)) {
-            console.log(`✅ Already connected to ${peerName} (${peerId})`);
+            this.renegotiateMissingTracks(peerId, peerName);
             return;
         }
         
@@ -992,6 +999,45 @@ class ProctoringApp {
                 }, 1000);
             }
         }, 10000); // 10 second timeout for different networks
+    }
+    
+    ensureLocalTracks(peerConnection) {
+        if (!this.localStream) return 0;
+        
+        const sentTrackIds = new Set(
+            peerConnection.getSenders()
+                .map(sender => sender.track && sender.track.id)
+                .filter(Boolean)
+        );
+        
+        let added = 0;
+        this.localStream.getTracks().forEach(track => {
+            if (!sentTrackIds.has(track.id)) {
+                peerConnection.addTrack(track, this.localStream);
+                added++;
+            }
+        });
+        
+        return added;
+    }
+    
+    renegotiateMissingTracks(peerId, peerName) {
+        const peerConnection = this.peerConnections.get(peerId);
+        if (!peerConnection) return;
+        
+        const added = this.ensureLocalTracks(peerConnection);
+        if (added === 0) return;
+        
+        peerConnection._needsRenegotiation = true;
+        
+        if (peerConnection.signalingState !== 'stable') {
+            console.log(`⏳ Deferring ${added} new track(s) to ${peerName} until negotiation settles`);
+            return;
+        }
+        
+        peerConnection._needsRenegotiation = false;
+        console.log(`➕ Publishing ${added} missing track(s) to ${peerName}`);
+        this.createOfferForPeer(peerId);
     }
     
     createPeerConnection(peerId, peerName, peerType) {
@@ -1063,6 +1109,7 @@ class ProctoringApp {
             console.log(`🔗 Connection state with ${peerName}: ${peerConnection.connectionState}`);
             
             if (peerConnection.connectionState === 'connected') {
+                this.setPeerStatus(peerId, 'Connected');
                 this.showMessage(`✅ Connected to ${peerName}`, 'success');
                 console.log(`🎉 Successfully connected to ${peerName}!`);
                 
@@ -1070,6 +1117,11 @@ class ProctoringApp {
                 setTimeout(() => {
                     this.checkExistingTracks(peerId, peerName);
                 }, 500);
+                
+                // Publish tracks that arrived after the last negotiation finished
+                setTimeout(() => {
+                    this.renegotiateMissingTracks(peerId, peerName);
+                }, 900);
                 
                 // Try to play video after reconnection
                 setTimeout(() => {
@@ -1084,6 +1136,7 @@ class ProctoringApp {
                 }, 1500);
             } else if (peerConnection.connectionState === 'failed') {
                 console.log(`❌ Connection failed with ${peerName}, removing video and reconnecting...`);
+                this.setPeerStatus(peerId, 'Connection failed – retrying');
                 
                 // Remove the black video container immediately
                 this.removeRemoteVideo(peerId);
@@ -1108,9 +1161,11 @@ class ProctoringApp {
             switch(peerConnection.iceConnectionState) {
                 case 'checking':
                     console.log(`⏳ ICE checking for ${peerName} - gathering candidates...`);
+                    this.setPeerStatus(peerId, 'Connecting media...');
                     break;
                 case 'connected':
                     console.log(`✅ ICE connected to ${peerName}! Video should work now.`);
+                    this.setPeerStatus(peerId, 'Media connected');
                     
                     // Log candidate types
                     const stats = peerConnection.getStats();
@@ -1125,6 +1180,11 @@ class ProctoringApp {
                     break;
                 case 'failed':
                     console.error(`❌ ICE failed for ${peerName}. Network issue or no TURN server.`);
+                    this.setPeerStatus(peerId, 'Media failed – retrying');
+                    if (!peerConnection._warnedMediaFail) {
+                        peerConnection._warnedMediaFail = true;
+                        this.showMessage(`❌ Media path to ${peerName} failed. Check TURN/network, retrying…`, 'error');
+                    }
                     
                     // Try to reconnect with different configuration
                     setTimeout(() => {
@@ -1141,6 +1201,7 @@ class ProctoringApp {
                     break;
                 case 'disconnected':
                     console.log(`⚠️ ICE disconnected from ${peerName}`);
+                    this.setPeerStatus(peerId, 'Media interrupted');
                     break;
                 case 'closed':
                     console.log(`🔒 ICE closed for ${peerName}`);
@@ -1237,12 +1298,12 @@ class ProctoringApp {
                         videoEl.play().then(() => {
                             console.log(`▶️ Video playing for ${peerName} (${videoEl.videoWidth}x${videoEl.videoHeight})`);
                         }).catch(e => {
-                            console.log(`Play attempt for ${peerName}: ${e.message}, retrying in 1s`);
+                            console.log(`Autoplay blocked for ${peerName} (${e.message}); playing muted until a user gesture`);
                             videoEl.muted = true;
                             videoEl.play().catch(() => {
-                                console.log(`Retrying muted play for ${peerName} in 2s`);
                                 setTimeout(tryPlay, 2000);
                             });
+                            this.unlockRemoteAudio();
                         });
                     };
                     
@@ -1323,6 +1384,16 @@ class ProctoringApp {
             console.log(`🎬 Setting video source for ${peerName}`);
             videoElement.srcObject = stream;
         }
+        
+        const peerConnection = this.peerConnections.get(peerId);
+        if (peerConnection) {
+            const iceState = peerConnection.iceConnectionState;
+            const label = iceState === 'connected' || iceState === 'completed'
+                ? 'Media connected'
+                : iceState === 'failed' ? 'Media failed – retrying'
+                : 'Connecting media...';
+            this.setPeerStatus(peerId, label);
+        }
     }
     
     removeRemoteVideo(peerId) {
@@ -1332,6 +1403,29 @@ class ProctoringApp {
             videoContainer.remove();
         }
         this.remoteStreams.delete(peerId);
+    }
+    
+    setPeerStatus(peerId, text) {
+        const statusEl = document.getElementById(`remoteStatus-${peerId}`);
+        if (statusEl) statusEl.textContent = text;
+    }
+    
+    unlockRemoteAudio() {
+        if (this._audioUnlockBound) return;
+        this._audioUnlockBound = true;
+        
+        const unmute = () => {
+            document.querySelectorAll('video[id^="remoteVideo-"]').forEach(video => {
+                video.muted = false;
+                video.play().catch(() => {});
+            });
+            document.removeEventListener('pointerdown', unmute, true);
+            document.removeEventListener('keydown', unmute, true);
+            this._audioUnlockBound = false;
+        };
+        
+        document.addEventListener('pointerdown', unmute, true);
+        document.addEventListener('keydown', unmute, true);
     }
     
     async createOfferForPeer(peerId) {
@@ -1400,18 +1494,14 @@ class ProctoringApp {
                 const participant = this.participants.get(data.senderId);
                 if (participant) {
                     peerConnection = this.createPeerConnection(data.senderId, participant.name, participant.type);
-                    
-                    if (this.localStream) {
-                        console.log(`➕ Adding local tracks to peer ${data.senderId} (handling offer)`);
-                        this.localStream.getTracks().forEach(track => {
-                            peerConnection.addTrack(track, this.localStream);
-                        });
-                    }
                 } else {
                     console.error('❌ No participant info for', data.senderId);
                     return;
                 }
             }
+            
+            // Attach tracks before answering so the answer can advertise them
+            this.ensureLocalTracks(peerConnection);
             
             // Glare resolution: an offer collision is won by the impolite peer
             const collision = peerConnection.signalingState !== 'stable';
@@ -1456,6 +1546,11 @@ class ProctoringApp {
                 console.log('✅ Answer sent');
             }
             
+            if (peerConnection._needsRenegotiation) {
+                peerConnection._needsRenegotiation = false;
+                this.createOfferForPeer(data.senderId);
+            }
+            
         } catch (error) {
             console.error('❌ Error handling offer:', error);
         }
@@ -1473,6 +1568,11 @@ class ProctoringApp {
                 }));
                 console.log('✅ Answer processed');
                 await this.flushPendingCandidates(data.senderId);
+                
+                if (peerConnection._needsRenegotiation) {
+                    peerConnection._needsRenegotiation = false;
+                    this.createOfferForPeer(data.senderId);
+                }
             } else {
                 console.error('❌ No peer connection for', data.senderId);
             }

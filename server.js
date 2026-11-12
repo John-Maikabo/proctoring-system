@@ -165,6 +165,13 @@ app.get('/api/create-room', (req, res) => {
     const userName = req.query.name || 'Proctor';
     const description = (req.query.description || '').toString().trim().slice(0, 300);
     
+    if (!description) {
+        return res.status(400).json({
+            success: false,
+            error: 'A session description is required'
+        });
+    }
+    
     rooms.set(roomId, {
         id: roomId,
         participants: new Map(),

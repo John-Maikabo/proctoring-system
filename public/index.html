@@ -34,8 +34,9 @@
                 </div>
                 
                 <div class="form-group" id="sessionDescriptionGroup">
-                    <label for="sessionDescription"><i class="fas fa-align-left"></i> Session Description:</label>
-                    <textarea id="sessionDescription" rows="3" maxlength="300" placeholder="What is this session about? Participants will see this."></textarea>
+                    <label for="sessionDescription"><i class="fas fa-align-left"></i> Session Description: <span class="required-star">*</span></label>
+                    <textarea id="sessionDescription" rows="3" maxlength="300" required placeholder="What is this session about? Participants will see this."></textarea>
+                    <p class="form-hint">Required — participants see this before joining.</p>
                 </div>
                 
                 <div class="button-group">
@@ -105,6 +106,17 @@
                         <i class="fas fa-chevron-down chevron"></i>
                     </summary>
                     <div class="collapsible-body">
+                        <div class="form-group media-option">
+                            <label for="backgroundSelect"><i class="fas fa-image"></i> Video Background:</label>
+                            <select id="backgroundSelect">
+                                <option value="none">None</option>
+                                <option value="blur">Blur</option>
+                                <option value="gradient-violet">Soft violet</option>
+                                <option value="gradient-ocean">Ocean blue</option>
+                                <option value="gradient-sunset">Warm sunset</option>
+                                <option value="gradient-studio">Dark studio</option>
+                            </select>
+                        </div>
                         <button id="startCallBtn" class="btn btn-start">
                             <i class="fas fa-video"></i> Start Camera &amp; Microphone
                         </button>
@@ -202,8 +214,19 @@
                     <label for="joinUserName">Your Name:</label>
                     <input type="text" id="joinUserName" placeholder="Enter your name" value="">
                 </div>
+                <p class="form-hint">
+                    <i class="fas fa-circle-info"></i>
+                    Choose how to join. If you join with audio only, you can start your camera later from Media Controls.
+                </p>
+                <div class="join-mode-buttons">
+                    <button id="joinWithCameraBtn" class="btn btn-success">
+                        <i class="fas fa-video"></i> Join with Camera
+                    </button>
+                    <button id="joinWithAudioBtn" class="btn btn-secondary">
+                        <i class="fas fa-microphone"></i> Join with Audio Only
+                    </button>
+                </div>
                 <div class="modal-buttons">
-                    <button id="confirmJoinBtn" class="btn btn-primary">Join</button>
                     <button id="cancelJoinBtn" class="btn btn-secondary">Cancel</button>
                 </div>
             </div>

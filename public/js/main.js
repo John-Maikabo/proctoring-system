@@ -30,6 +30,19 @@ class ProctoringApp {
         this._reconnectTimer = null;
         this._heartbeatTimer = null;
         this._audioRetryArmed = false;
+        this.cameraStream = null;
+        this.backgroundMode = 'none';
+        this._segmentation = null;
+        this._bgVideo = null;
+        this._bgCanvas = null;
+        this._bgCtx = null;
+        this._personCanvas = null;
+        this._personCtx = null;
+        this._bgTrack = null;
+        this._bgRAF = null;
+        this._bgBusy = false;
+        this._bgActive = false;
+        this._bgGeneration = 0;
         
         // Check for existing proctor session
         this.checkSavedProctorSession();
@@ -109,8 +122,14 @@ class ProctoringApp {
                     nameInput.value = this.userName;
                 }
                 
-                console.log('Auto-joining room:', this.roomId, 'as', this.userType);
-                this.joinExistingRoom();
+                const isSavedProctor = savedRoom === roomId && savedUserId === this.userId;
+                if (isSavedProctor) {
+                    console.log('Auto-joining room:', this.roomId, 'as', this.userType);
+                    this.joinExistingRoom();
+                } else {
+                    console.log('Showing join options for room:', roomId);
+                    this.showJoinModal();
+                }
             }
             
             // Show proctor rejoin panel if applicable
@@ -259,7 +278,11 @@ class ProctoringApp {
         document.getElementById('shareWhatsAppBtn')?.addEventListener('click', () => this.shareWhatsApp());
         document.getElementById('shareEmailBtn')?.addEventListener('click', () => this.shareEmail());
         document.getElementById('confirmJoinBtn')?.addEventListener('click', () => this.confirmJoin());
+        document.getElementById('joinWithCameraBtn')?.addEventListener('click', () => this.confirmJoin('camera'));
+        document.getElementById('joinWithAudioBtn')?.addEventListener('click', () => this.confirmJoin('audio'));
         document.getElementById('cancelJoinBtn')?.addEventListener('click', () => this.cancelJoin());
+        document.getElementById('backgroundSelect')?.addEventListener('change', (e) => this.changeBackground(e.target.value));
+        document.getElementById('sessionDescription')?.addEventListener('input', (e) => e.target.classList.remove('input-error'));
         document.getElementById('toggleAudioBtn')?.addEventListener('click', () => this.toggleAudio());
         document.getElementById('toggleVideoBtn')?.addEventListener('click', () => this.toggleVideo());
         document.getElementById('screenShareBtn')?.addEventListener('click', () => this.toggleScreenShare());
@@ -324,9 +347,24 @@ class ProctoringApp {
             const descriptionInput = document.getElementById('sessionDescription');
             const description = descriptionInput ? descriptionInput.value.trim().slice(0, 300) : '';
             
+            if (!description) {
+                this.updateStatus('Description required', 'disconnected');
+                this.showMessage('❌ Please add a session description before creating the session', 'error');
+                if (descriptionInput) {
+                    descriptionInput.classList.add('input-error');
+                    descriptionInput.focus();
+                }
+                return;
+            }
+            descriptionInput.classList.remove('input-error');
+            
             console.log('Creating room for:', this.userName);
             const response = await fetch('/api/create-room?userId=' + this.userId + '&name=' + encodeURIComponent(this.userName) + '&description=' + encodeURIComponent(description));
             const data = await response.json();
+            
+            if (!data.success) {
+                throw new Error(data.error || 'Unable to create session');
+            }
             
             if (data.success) {
                 this.roomId = data.roomId;
@@ -418,7 +456,7 @@ class ProctoringApp {
         if (modal) modal.classList.add('hidden');
     }
     
-    confirmJoin() {
+    confirmJoin(mediaMode = 'audio') {
         const roomIdInput = document.getElementById('joinRoomId');
         if (!roomIdInput) {
             this.showMessage('❌ Join input not found', 'error');
@@ -440,11 +478,11 @@ class ProctoringApp {
         
         this.roomId = roomId;
         this.userType = 'candidate';
-        this.joinExistingRoom();
+        this.joinExistingRoom(mediaMode);
         this.cancelJoin();
     }
     
-    async joinExistingRoom() {
+    async joinExistingRoom(mediaMode = null) {
         try {
             const response = await fetch(`/api/validate-room/${encodeURIComponent(this.roomId)}`);
             if (!response.ok) {
@@ -467,6 +505,13 @@ class ProctoringApp {
         ]);
         
         this.updateRoomUI();
+        
+        if (mediaMode === 'audio') {
+            await this.startAudioOnly();
+        } else if (mediaMode === 'camera') {
+            await this.startCall();
+        }
+        
         this.updateStatus('Joined session', 'connected');
         this.showMessage('✅ Joined as ' + this.userName, 'success');
         this.connectWebSocket();
@@ -847,44 +892,55 @@ class ProctoringApp {
         root.style.setProperty('--grid-cols', columns);
     }
     
+    getAudioConstraints() {
+        return {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+        };
+    }
+    
+    getVideoConstraints() {
+        return {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            frameRate: { ideal: 24 }
+        };
+    }
+    
     async startCall() {
+        // Asked for the camera after joining with audio only
+        if (this.localStream && this.localStream.getAudioTracks().length > 0 && this.localStream.getVideoTracks().length === 0) {
+            return this.startCameraForAudioOnly();
+        }
+        
+        if (this.localStream && this.localStream.getVideoTracks().length > 0) {
+            this.showMessage('Camera is already running', 'info');
+            return;
+        }
+        
         try {
             this.updateStatus('Starting camera...', 'connecting');
             this.showMessage('🔄 Starting camera...');
             
             console.log('🎥 Requesting user media...');
-            
-            this.localStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: 640 },
-                    height: { ideal: 480 },
-                    frameRate: { ideal: 24 }
-                },
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                }
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: this.getVideoConstraints(),
+                audio: this.getAudioConstraints()
             });
             
             console.log('✅ User media obtained');
-            console.log('Video tracks:', this.localStream.getVideoTracks().length);
-            console.log('Audio tracks:', this.localStream.getAudioTracks().length);
+            console.log('Video tracks:', stream.getVideoTracks().length);
+            console.log('Audio tracks:', stream.getAudioTracks().length);
             
-            this.localStream.getTracks().forEach((track, i) => {
-                console.log(`Track ${i}: ${track.kind}, enabled: ${track.enabled}, readyState: ${track.readyState}`);
-            });
+            this.cameraStream = new MediaStream(stream.getVideoTracks());
+            this.localStream = new MediaStream();
+            stream.getAudioTracks().forEach(track => this.localStream.addTrack(track));
+            await this.publishCameraVideo();
             
-            const localVideo = document.getElementById('localVideo');
-            localVideo.srcObject = this.localStream;
-            
-            // Wait for video to be ready
-            localVideo.onloadedmetadata = () => {
-                console.log('✅ Local video metadata loaded');
-                localVideo.play().catch(e => console.log('Play error:', e));
-            };
-            
+            this.showLocalVideo();
             document.getElementById('localStatus').textContent = 'Camera on';
+            document.getElementById('videoStatus').textContent = 'On';
             
             // Enable controls
             document.getElementById('startCallBtn').disabled = true;
@@ -901,39 +957,374 @@ class ProctoringApp {
             this.updateStatus('Call started', 'connected');
             this.showMessage('✅ Camera and microphone started!', 'success');
             
-            // Connect to all existing participants
-            console.log(`🔗 Connecting to ${this.participants.size} existing participants`);
-            
-            // Peer connections created by incoming offers need the new tracks too
-            this.peerConnections.forEach((pc, peerId) => {
-                const participant = this.participants.get(peerId);
-                this.renegotiateMissingTracks(peerId, participant ? participant.name : peerId);
-            });
-            
-            // Add a delay to ensure local stream is fully ready
-            setTimeout(() => {
-                this.participants.forEach((participant, userId) => {
-                    if (userId !== this.userId) {
-                        console.log(`🔗 Connecting to: ${participant.name} (${userId})`);
-                        this.connectToPeer(userId, participant.name, participant.type);
-                    }
-                });
-            }, 1000);
+            this.connectAndPublishTracks(1000);
             
         } catch (error) {
             console.error('❌ Error starting call:', error);
             this.updateStatus('Camera/microphone error', 'disconnected');
+            this.reportMediaError(error);
+        }
+    }
+    
+    async startAudioOnly() {
+        try {
+            this.updateStatus('Starting microphone...', 'connecting');
             
-            if (error.name === 'NotAllowedError') {
-                this.showMessage('❌ Camera/microphone access was denied. Please check permissions.', 'error');
-            } else if (error.name === 'NotFoundError') {
-                this.showMessage('❌ No camera/microphone found. Please connect one.', 'error');
-            } else if (error.name === 'NotReadableError') {
-                this.showMessage('❌ Camera/microphone is in use by another application.', 'error');
-            } else {
-                this.showMessage('❌ Error: ' + error.message, 'error');
+            this.localStream = await navigator.mediaDevices.getUserMedia({
+                audio: this.getAudioConstraints(),
+                video: false
+            });
+            
+            this.isAudioMuted = false;
+            document.getElementById('localStatus').textContent = 'Audio only';
+            document.getElementById('audioStatus').textContent = 'On';
+            document.getElementById('videoStatus').textContent = 'Off';
+            
+            const startBtn = document.getElementById('startCallBtn');
+            startBtn.disabled = false;
+            startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera';
+            
+            document.getElementById('endCallBtn').disabled = false;
+            document.getElementById('toggleAudioBtn').disabled = false;
+            document.getElementById('toggleVideoBtn').disabled = true;
+            document.getElementById('screenShareBtn').disabled = false;
+            document.getElementById('recordBtn').disabled = false;
+            
+            if (this.userType === 'proctor') {
+                document.getElementById('snapshotBtn').disabled = false;
+            }
+            
+            this.updateStatus('Audio connected', 'connected');
+            this.showMessage('🎤 Joined with audio only. Start your camera whenever you are ready.', 'success');
+        } catch (error) {
+            console.error('❌ Error starting microphone:', error);
+            this.updateStatus('Microphone error', 'disconnected');
+            this.reportMediaError(error);
+        }
+    }
+    
+    async startCameraForAudioOnly() {
+        try {
+            this.updateStatus('Starting camera...', 'connecting');
+            this.showMessage('🔄 Starting camera...');
+            
+            const camera = await navigator.mediaDevices.getUserMedia({
+                video: this.getVideoConstraints(),
+                audio: false
+            });
+            
+            this.cameraStream = new MediaStream(camera.getVideoTracks());
+            await this.publishCameraVideo();
+            
+            this.showLocalVideo();
+            document.getElementById('localStatus').textContent = 'Camera on';
+            document.getElementById('videoStatus').textContent = 'On';
+            document.getElementById('startCallBtn').disabled = true;
+            document.getElementById('startCallBtn').innerHTML = '<i class="fas fa-video"></i> Start Camera &amp; Microphone';
+            document.getElementById('toggleVideoBtn').disabled = false;
+            this.isVideoHidden = false;
+            
+            this.updateStatus('Camera started', 'connected');
+            this.showMessage('✅ Camera started', 'success');
+            
+            this.connectAndPublishTracks(800);
+        } catch (error) {
+            console.error('❌ Error starting camera:', error);
+            this.updateStatus('Camera error', 'disconnected');
+            this.reportMediaError(error);
+        }
+    }
+    
+    showLocalVideo() {
+        const localVideo = document.getElementById('localVideo');
+        if (!localVideo || !this.localStream) return;
+        localVideo.srcObject = this.localStream;
+        localVideo.onloadedmetadata = () => {
+            localVideo.play().catch(e => console.log('Play error:', e));
+        };
+        localVideo.play().catch(() => {});
+    }
+    
+    connectAndPublishTracks(delay = 1000) {
+        // Peer connections created by incoming offers need the new tracks too
+        this.peerConnections.forEach((pc, peerId) => {
+            const participant = this.participants.get(peerId);
+            this.renegotiateMissingTracks(peerId, participant ? participant.name : peerId);
+        });
+        
+        // Add a delay to ensure local stream is fully ready
+        setTimeout(() => {
+            this.participants.forEach((participant, userId) => {
+                if (userId !== this.userId) {
+                    console.log(`🔗 Connecting to: ${participant.name} (${userId})`);
+                    this.connectToPeer(userId, participant.name, participant.type);
+                }
+            });
+        }, delay);
+    }
+    
+    reportMediaError(error) {
+        if (error.name === 'NotAllowedError') {
+            this.showMessage('❌ Camera/microphone access was denied. Please check permissions.', 'error');
+        } else if (error.name === 'NotFoundError') {
+            this.showMessage('❌ No camera/microphone found. Please connect one.', 'error');
+        } else if (error.name === 'NotReadableError') {
+            this.showMessage('❌ Camera/microphone is in use by another application.', 'error');
+        } else {
+            this.showMessage('❌ Error: ' + error.message, 'error');
+        }
+    }
+    
+    async publishCameraVideo() {
+        if (!this.cameraStream) return;
+        const rawTrack = this.cameraStream.getVideoTracks()[0];
+        if (!rawTrack) return;
+        
+        let track = rawTrack;
+        if (this.backgroundMode !== 'none') {
+            try {
+                await this.startBackgroundProcessor();
+                track = this._bgTrack;
+            } catch (error) {
+                console.error('Background effect failed:', error);
+                this.backgroundMode = 'none';
+                const select = document.getElementById('backgroundSelect');
+                if (select) select.value = 'none';
+                this.showMessage('⚠️ Background effects unavailable; using the plain camera', 'error');
             }
         }
+        
+        this.setPublishedVideoTrack(track);
+        this.showLocalVideo();
+    }
+    
+    setPublishedVideoTrack(track) {
+        if (!track) return;
+        if (!this.localStream) this.localStream = new MediaStream();
+        
+        this.localStream.getVideoTracks().forEach(existing => {
+            if (existing.id !== track.id) this.localStream.removeTrack(existing);
+        });
+        
+        if (!this.localStream.getVideoTracks().some(existing => existing.id === track.id)) {
+            this.localStream.addTrack(track);
+        }
+        
+        track.enabled = !this.isVideoHidden;
+        
+        // Screen sharing temporarily owns the video sender; it restores the camera itself
+        if (this.isScreenSharing) return;
+        
+        this.peerConnections.forEach(peerConnection => {
+            const sender = peerConnection.getSenders()
+                .find(s => s.track && s.track.kind === 'video');
+            if (sender) {
+                sender.replaceTrack(track).catch(error => {
+                    console.warn('Could not replace video track:', error.message);
+                });
+            }
+        });
+    }
+    
+    async changeBackground(mode) {
+        this.backgroundMode = mode;
+        
+        if (!this.localStream || this.localStream.getVideoTracks().length === 0) {
+            if (mode !== 'none') {
+                this.showMessage('Background will be applied when you start the camera', 'info');
+            }
+            return;
+        }
+        
+        try {
+            if (mode === 'none') {
+                const rawTrack = this.cameraStream?.getVideoTracks()[0];
+                if (rawTrack) this.setPublishedVideoTrack(rawTrack);
+                this.stopBackgroundProcessor();
+                this.showLocalVideo();
+                this.showMessage('Background removed', 'info');
+            } else {
+                await this.publishCameraVideo();
+                this.showMessage('✅ Background applied', 'success');
+            }
+        } catch (error) {
+            console.error('Error changing background:', error);
+            this.showMessage('❌ Could not apply background: ' + error.message, 'error');
+        }
+    }
+    
+    async ensureSegmentation() {
+        if (this._segmentation) return this._segmentation;
+        
+        if (typeof window.SelfieSegmentation === 'undefined') {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js';
+                script.crossOrigin = 'anonymous';
+                script.onload = resolve;
+                script.onerror = () => reject(new Error('Could not load background effects'));
+                document.head.appendChild(script);
+            });
+        }
+        
+        const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/';
+        this._segmentation = new window.SelfieSegmentation({
+            locateFile: file => base + file
+        });
+        this._segmentation.setOptions({ modelSelection: 1 });
+        this._segmentation.onResults(results => this.drawBackgroundFrame(results));
+        
+        if (typeof this._segmentation.initialize === 'function') {
+            await this._segmentation.initialize();
+        }
+        
+        return this._segmentation;
+    }
+    
+    async startBackgroundProcessor() {
+        const segmentation = await this.ensureSegmentation();
+        if (!this.cameraStream) throw new Error('Camera is not running');
+        
+        if (!this._bgVideo) {
+            this._bgVideo = document.createElement('video');
+            this._bgVideo.id = 'backgroundSource';
+            this._bgVideo.muted = true;
+            this._bgVideo.playsInline = true;
+            this._bgVideo.autoplay = true;
+            this._bgVideo.style.cssText = 'position: fixed; left: -9999px; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none;';
+            document.body.appendChild(this._bgVideo);
+        }
+        
+        if (this._bgVideo.srcObject !== this.cameraStream) {
+            this._bgVideo.srcObject = this.cameraStream;
+        }
+        await this._bgVideo.play().catch(() => {});
+        
+        if (!this._bgCanvas) {
+            this._bgCanvas = document.createElement('canvas');
+            this._bgCanvas.width = 640;
+            this._bgCanvas.height = 480;
+            this._bgCtx = this._bgCanvas.getContext('2d');
+            
+            this._personCanvas = document.createElement('canvas');
+            this._personCanvas.width = 640;
+            this._personCanvas.height = 480;
+            this._personCtx = this._personCanvas.getContext('2d');
+            
+            this._bgTrack = this._bgCanvas.captureStream(24).getVideoTracks()[0];
+        }
+        
+        if (!this._bgActive) {
+            this._bgActive = true;
+            const generation = ++this._bgGeneration;
+            const tick = async () => {
+                if (!this._bgActive || generation !== this._bgGeneration) return;
+                
+                if (!this._bgBusy && this._bgVideo.readyState >= 2 && this._bgVideo.videoWidth > 0) {
+                    this._bgBusy = true;
+                    try {
+                        await segmentation.send({ image: this._bgVideo });
+                    } catch (error) {
+                        console.warn('Background frame failed:', error.message);
+                    }
+                    this._bgBusy = false;
+                }
+                
+                this._bgRAF = requestAnimationFrame(tick);
+            };
+            this._bgRAF = requestAnimationFrame(tick);
+        }
+        
+        return this._bgTrack;
+    }
+    
+    stopBackgroundProcessor() {
+        this._bgActive = false;
+        this._bgGeneration++;
+        if (this._bgRAF) {
+            cancelAnimationFrame(this._bgRAF);
+            this._bgRAF = null;
+        }
+        if (this._bgVideo) {
+            this._bgVideo.pause();
+            this._bgVideo.srcObject = null;
+        }
+        if (this._bgTrack) {
+            this._bgTrack.stop();
+            this._bgTrack = null;
+        }
+        this._bgCanvas = null;
+        this._bgCtx = null;
+        this._personCanvas = null;
+        this._personCtx = null;
+        this._bgBusy = false;
+    }
+    
+    drawBackgroundFrame(results) {
+        if (!this._bgCtx || !results || !results.image) return;
+        
+        const width = results.image.width || 640;
+        const height = results.image.height || 480;
+        
+        if (this._bgCanvas.width !== width || this._bgCanvas.height !== height) {
+            this._bgCanvas.width = width;
+            this._bgCanvas.height = height;
+            this._personCanvas.width = width;
+            this._personCanvas.height = height;
+        }
+        
+        // Cut the person out of the camera frame with the segmentation mask
+        const personCtx = this._personCtx;
+        personCtx.globalCompositeOperation = 'source-over';
+        personCtx.clearRect(0, 0, width, height);
+        personCtx.drawImage(results.segmentationMask, 0, 0, width, height);
+        personCtx.globalCompositeOperation = 'source-in';
+        personCtx.drawImage(results.image, 0, 0, width, height);
+        personCtx.globalCompositeOperation = 'source-over';
+        
+        const ctx = this._bgCtx;
+        ctx.clearRect(0, 0, width, height);
+        
+        if (this.backgroundMode === 'blur') {
+            ctx.save();
+            ctx.filter = 'blur(14px)';
+            ctx.drawImage(results.image, -16, -16, width + 32, height + 32);
+            ctx.restore();
+        } else {
+            ctx.fillStyle = this.getBackgroundFill(ctx, width, height);
+            ctx.fillRect(0, 0, width, height);
+        }
+        
+        ctx.drawImage(this._personCanvas, 0, 0, width, height);
+    }
+    
+    getBackgroundFill(ctx, width, height) {
+        const gradient = ctx.createLinearGradient(0, 0, width, height);
+        
+        switch (this.backgroundMode) {
+            case 'gradient-violet':
+                gradient.addColorStop(0, '#8ec5fc');
+                gradient.addColorStop(1, '#e0c3fc');
+                break;
+            case 'gradient-ocean':
+                gradient.addColorStop(0, '#1a2980');
+                gradient.addColorStop(1, '#26d0ce');
+                break;
+            case 'gradient-sunset':
+                gradient.addColorStop(0, '#f6d365');
+                gradient.addColorStop(1, '#fda085');
+                break;
+            case 'gradient-studio':
+                gradient.addColorStop(0, '#0f2027');
+                gradient.addColorStop(0.5, '#203a43');
+                gradient.addColorStop(1, '#2c5364');
+                break;
+            default:
+                gradient.addColorStop(0, '#232526');
+                gradient.addColorStop(1, '#414345');
+        }
+        
+        return gradient;
     }
     
     connectToPeer(peerId, peerName, peerType) {
@@ -2003,6 +2394,13 @@ class ProctoringApp {
             this._reconnectTimer = null;
         }
         
+        this.stopBackgroundProcessor();
+        
+        if (this.cameraStream) {
+            this.cameraStream.getTracks().forEach(track => track.stop());
+            this.cameraStream = null;
+        }
+        
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
@@ -2082,6 +2480,11 @@ class ProctoringApp {
         if (videoBtn) videoBtn.innerHTML = '<i class="fas fa-video"></i> Hide Video';
         const recordBtn = document.getElementById('recordBtn');
         if (recordBtn) recordBtn.innerHTML = '<i class="fas fa-circle"></i> Start Recording';
+        const startBtn = document.getElementById('startCallBtn');
+        if (startBtn) startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera &amp; Microphone';
+        const backgroundSelect = document.getElementById('backgroundSelect');
+        if (backgroundSelect) backgroundSelect.value = 'none';
+        this.backgroundMode = 'none';
         const audioStatus = document.getElementById('audioStatus');
         if (audioStatus) audioStatus.textContent = 'On';
         const videoStatus = document.getElementById('videoStatus');

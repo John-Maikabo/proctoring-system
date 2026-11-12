@@ -494,6 +494,8 @@ class ProctoringApp {
         
         this.updateJoinButtonVisibility();
         
+        this.updateStartButton();
+        
         // Set button states
         document.getElementById('endCallBtn').disabled = true;
         document.getElementById('toggleAudioBtn').disabled = true;
@@ -515,10 +517,11 @@ class ProctoringApp {
         if (modal) modal.classList.remove('hidden');
         
         const urlParams = new URLSearchParams(window.location.search);
-        const roomId = urlParams.get('room');
+        const roomId = this.roomId || urlParams.get('room');
         const joinRoomIdInput = document.getElementById('joinRoomId');
         
-        if (roomId && joinRoomIdInput && !joinRoomIdInput.value) {
+        // The proctor's own session ID is always pre-filled
+        if (roomId && joinRoomIdInput) {
             joinRoomIdInput.value = roomId;
         }
         
@@ -1097,14 +1100,14 @@ class ProctoringApp {
     }
     
     async startCall() {
-        // Asked for the camera after joining with audio only
-        if (this.localStream && this.localStream.getAudioTracks().length > 0 && this.localStream.getVideoTracks().length === 0) {
-            return this.startCameraForAudioOnly();
+        // The start button stays available so a camera can always be (re)started
+        if (this.localStream && this.localStream.getVideoTracks().length > 0) {
+            return this.restartCamera();
         }
         
-        if (this.localStream && this.localStream.getVideoTracks().length > 0) {
-            this.showMessage('Camera is already running', 'info');
-            return;
+        // Asked for the camera after joining with audio only
+        if (this.localStream && this.localStream.getAudioTracks().length > 0) {
+            return this.startCameraForAudioOnly();
         }
         
         try {
@@ -1131,7 +1134,7 @@ class ProctoringApp {
             document.getElementById('videoStatus').textContent = 'On';
             
             // Enable controls
-            document.getElementById('startCallBtn').disabled = true;
+            this.updateStartButton();
             document.getElementById('endCallBtn').disabled = false;
             document.getElementById('toggleAudioBtn').disabled = false;
             document.getElementById('toggleVideoBtn').disabled = false;
@@ -1170,9 +1173,7 @@ class ProctoringApp {
             document.getElementById('audioStatus').textContent = 'On';
             document.getElementById('videoStatus').textContent = 'Off';
             
-            const startBtn = document.getElementById('startCallBtn');
-            startBtn.disabled = false;
-            startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera';
+            this.updateStartButton();
             
             document.getElementById('endCallBtn').disabled = false;
             document.getElementById('toggleAudioBtn').disabled = false;
@@ -1211,8 +1212,7 @@ class ProctoringApp {
             this.showLocalVideo();
             document.getElementById('localStatus').textContent = 'Camera on';
             document.getElementById('videoStatus').textContent = 'On';
-            document.getElementById('startCallBtn').disabled = true;
-            document.getElementById('startCallBtn').innerHTML = '<i class="fas fa-video"></i> Start Camera &amp; Microphone';
+            this.updateStartButton();
             document.getElementById('toggleVideoBtn').disabled = false;
             this.isVideoHidden = false;
             
@@ -1224,6 +1224,62 @@ class ProctoringApp {
             this.connectAndPublishTracks(800);
         } catch (error) {
             console.error('❌ Error starting camera:', error);
+            this.updateStatus('Camera error', 'disconnected');
+            this.reportMediaError(error);
+        }
+    }
+    
+    updateStartButton() {
+        const btn = document.getElementById('startCallBtn');
+        if (!btn) return;
+        
+        const hasCamera = !!(this.localStream && this.localStream.getVideoTracks().length > 0);
+        const hasAudio = !!(this.localStream && this.localStream.getAudioTracks().length > 0);
+        
+        btn.disabled = false;
+        btn.classList.remove('hidden');
+        
+        if (hasCamera) {
+            btn.innerHTML = '<i class="fas fa-sync-alt"></i> Restart Camera';
+        } else if (hasAudio) {
+            btn.innerHTML = '<i class="fas fa-video"></i> Start Camera';
+        } else {
+            btn.innerHTML = '<i class="fas fa-video"></i> Start Camera &amp; Microphone';
+        }
+    }
+    
+    async restartCamera() {
+        try {
+            this.updateStatus('Restarting camera...', 'connecting');
+            this.showMessage('🔄 Restarting camera...');
+            
+            const oldCameraTracks = this.cameraStream ? this.cameraStream.getTracks() : [];
+            this.stopBackgroundProcessor();
+            
+            const camera = await navigator.mediaDevices.getUserMedia({
+                video: this.getVideoConstraints(),
+                audio: false
+            });
+            
+            oldCameraTracks.forEach(track => track.stop());
+            this.cameraStream = new MediaStream(camera.getVideoTracks());
+            this.isVideoHidden = false;
+            
+            await this.publishCameraVideo();
+            
+            this.showLocalVideo();
+            document.getElementById('localStatus').textContent = 'Camera on';
+            document.getElementById('videoStatus').textContent = 'On';
+            this.updateStartButton();
+            
+            this.updateLocalVideoPlaceholder();
+            this.sendMediaState();
+            this.connectAndPublishTracks(600);
+            
+            this.updateStatus('Camera restarted', 'connected');
+            this.showMessage('✅ Camera restarted', 'success');
+        } catch (error) {
+            console.error('❌ Error restarting camera:', error);
             this.updateStatus('Camera error', 'disconnected');
             this.reportMediaError(error);
         }
@@ -1296,11 +1352,13 @@ class ProctoringApp {
         
         const stream = this.remoteStreams.get(peerId);
         const media = participant.mediaState || {};
-        const hasLiveVideo = !!(
+        const hasVideoTrack = !!(
             stream &&
-            stream.getVideoTracks().some(track => track.readyState === 'live' && !track.muted) &&
-            media.video !== false
+            stream.getVideoTracks().some(track => track.readyState === 'live')
         );
+        // Remote tracks can report a stale muted flag while frames are already
+        // rendering, so trust the track plus the peer's own camera state.
+        const hasLiveVideo = hasVideoTrack && media.video !== false;
         const audioMuted = media.audio === false;
         
         const audioEl = document.getElementById(`audioStatus-${peerId}`);
@@ -1978,14 +2036,13 @@ class ProctoringApp {
         }
         
         if (event.track.kind === 'video') {
-            event.track.onmute = () => {
+            const refreshVideoState = () => {
                 this.updateRemoteMediaIndicators(peerId);
                 this.updatePresentationView();
             };
-            event.track.onunmute = () => {
-                this.updateRemoteMediaIndicators(peerId);
-                this.updatePresentationView();
-            };
+            event.track.onmute = refreshVideoState;
+            event.track.onunmute = refreshVideoState;
+            event.track.onended = refreshVideoState;
         }
         
         this.updateRemoteMediaIndicators(peerId);
@@ -2062,6 +2119,10 @@ class ProctoringApp {
             videoElement.autoplay = true;
             videoElement.playsInline = true;
             videoElement.muted = false;
+            
+            // Refresh the overlay as soon as frames are actually being rendered
+            videoElement.addEventListener('loadedmetadata', () => this.updateRemoteMediaIndicators(peerId));
+            videoElement.addEventListener('playing', () => this.updateRemoteMediaIndicators(peerId));
             
             // Person-icon overlay for audio-only or camera-off participants
             const placeholder = document.createElement('div');
@@ -2847,8 +2908,7 @@ class ProctoringApp {
         if (videoBtn) videoBtn.innerHTML = '<i class="fas fa-video"></i> Hide Video';
         const recordBtn = document.getElementById('recordBtn');
         if (recordBtn) recordBtn.innerHTML = '<i class="fas fa-circle"></i> Start Recording';
-        const startBtn = document.getElementById('startCallBtn');
-        if (startBtn) startBtn.innerHTML = '<i class="fas fa-video"></i> Start Camera &amp; Microphone';
+        this.updateStartButton();
         const backgroundSelect = document.getElementById('backgroundSelect');
         if (backgroundSelect) backgroundSelect.value = 'none';
         this.backgroundMode = 'none';

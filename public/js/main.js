@@ -125,14 +125,20 @@ class ProctoringApp {
                 }
                 
                 const isSavedProctor = savedRoom === roomId && savedUserId === this.userId;
-                if (!isSavedProctor) {
+                const savedCandidate = this.getSavedCandidateSession();
+                const isSavedCandidate = !!savedCandidate && savedCandidate.room === roomId;
+                if (!isSavedProctor && !isSavedCandidate) {
                     console.log('Showing join options for room:', roomId);
                     this.showJoinModal();
                 }
             }
             
             // The rejoin panel verifies the room still exists before offering it
-            this.showProctorRejoinPanel();
+            this.showProctorRejoinPanel().then((shown) => {
+                if (shown) return;
+                this.showCandidateRejoinPanel();
+            });
+            this.updateJoinButtonVisibility();
             this.updateLocalVideoPlaceholder();
         }, 100);
     }
@@ -220,19 +226,54 @@ class ProctoringApp {
         }
     }
     
+    getSavedCandidateSession() {
+        const room = localStorage.getItem('candidateRoom');
+        const userId = localStorage.getItem('candidateUserId');
+        if (!room || userId !== this.userId) return null;
+        return {
+            room: room,
+            name: localStorage.getItem('candidateName') || 'Candidate',
+            media: localStorage.getItem('candidateMedia') || 'camera'
+        };
+    }
+    
+    saveCandidateSession() {
+        localStorage.setItem('candidateRoom', this.roomId);
+        localStorage.setItem('candidateUserId', this.userId);
+        localStorage.setItem('candidateName', this.userName);
+        localStorage.setItem('candidateMedia', this._joinedMediaMode || 'camera');
+    }
+    
+    clearSavedCandidateSession() {
+        localStorage.removeItem('candidateRoom');
+        localStorage.removeItem('candidateUserId');
+        localStorage.removeItem('candidateName');
+        localStorage.removeItem('candidateMedia');
+        this.updateJoinButtonVisibility();
+    }
+    
     updateJoinButtonVisibility() {
         const joinBtn = document.getElementById('joinRoomBtn');
-        if (!joinBtn) return;
-        const savedRoom = localStorage.getItem('proctorRoom');
-        const hasActiveSession = !!savedRoom && savedRoom === this.roomId;
-        joinBtn.classList.toggle('hidden', !hasActiveSession);
+        if (joinBtn) {
+            const savedRoom = localStorage.getItem('proctorRoom');
+            const hasActiveSession = !!savedRoom && savedRoom === this.roomId;
+            joinBtn.classList.toggle('hidden', !hasActiveSession);
+        }
+        
+        const rejoinBtn = document.getElementById('rejoinRoomBtn');
+        if (rejoinBtn) {
+            const savedCandidate = this.getSavedCandidateSession();
+            const hasProctorSession = !!localStorage.getItem('proctorRoom');
+            const canRejoin = !!savedCandidate && !hasProctorSession && !this.signaling;
+            rejoinBtn.classList.toggle('hidden', !canRejoin);
+        }
     }
     
     async showProctorRejoinPanel() {
         const savedRoom = localStorage.getItem('proctorRoom');
         const savedUserId = localStorage.getItem('proctorUserId');
         
-        if (!savedRoom || savedUserId !== this.userId) return;
+        if (!savedRoom || savedUserId !== this.userId) return false;
         
         let roomInfo = null;
         let roomMissing = false;
@@ -252,11 +293,11 @@ class ProctoringApp {
             this.clearSavedProctorSession();
             this.updateJoinButtonVisibility();
             console.log(`Saved proctor session ${savedRoom} has ended; cleared it`);
-            return;
+            return false;
         }
         
         // Leave a session that cannot be verified untouched
-        if (!roomInfo) return;
+        if (!roomInfo) return false;
         
         this.updateJoinButtonVisibility();
         
@@ -320,6 +361,92 @@ class ProctoringApp {
                 panel.remove();
             });
         }
+        
+        return true;
+    }
+    
+    async showCandidateRejoinPanel() {
+        const saved = this.getSavedCandidateSession();
+        if (!saved) return false;
+        
+        let roomInfo = null;
+        try {
+            const response = await fetch(`/api/room/${encodeURIComponent(saved.room)}`);
+            if (response.ok) {
+                roomInfo = await response.json();
+            } else if (response.status === 404) {
+                this.clearSavedCandidateSession();
+                console.log(`Saved candidate session ${saved.room} has ended; cleared it`);
+                return false;
+            }
+        } catch (error) {
+            console.warn('Could not verify saved session:', error.message);
+        }
+        
+        if (!roomInfo) return false;
+        
+        this.updateJoinButtonVisibility();
+        
+        let panel = document.getElementById('candidateRejoinPanel');
+        if (panel) return true;
+        
+        panel = document.createElement('div');
+        panel.id = 'candidateRejoinPanel';
+        panel.className = 'panel';
+        panel.style.cssText = `
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.9);
+            border: 2px solid #4cc9f0;
+            z-index: 1000;
+            padding: 20px;
+            border-radius: 10px;
+            min-width: 300px;
+            max-width: 520px;
+        `;
+        
+        const description = roomInfo.description || '';
+        panel.innerHTML = `
+            <h3><i class="fas fa-user"></i> Session Detected</h3>
+            <p>You already joined room <strong>${saved.room}</strong> as <strong>${this.escapeHtml(saved.name)}</strong>.</p>
+            ${description ? `<p class="rejoin-description"><i class="fas fa-align-left"></i> ${this.escapeHtml(description)}</p>` : ''}
+            <div style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
+                <button id="rejoinSavedCandidateBtn" class="btn btn-primary">
+                    <i class="fas fa-redo-alt"></i> Rejoin Session
+                </button>
+                <button id="dismissCandidateRejoinBtn" class="btn btn-warning">
+                    <i class="fas fa-times"></i> Not Now
+                </button>
+            </div>
+        `;
+        
+        document.body.appendChild(panel);
+        
+        document.getElementById('rejoinSavedCandidateBtn').addEventListener('click', () => {
+            panel.remove();
+            this.rejoinSavedCandidateSession();
+        });
+        
+        document.getElementById('dismissCandidateRejoinBtn').addEventListener('click', () => {
+            panel.remove();
+        });
+        
+        return true;
+    }
+    
+    rejoinSavedCandidateSession() {
+        const saved = this.getSavedCandidateSession();
+        if (!saved) {
+            this.showMessage('❌ No saved session to rejoin', 'error');
+            this.updateJoinButtonVisibility();
+            return;
+        }
+        this.roomId = saved.room;
+        this.userType = 'candidate';
+        this.userName = saved.name;
+        this.joinExistingRoom(saved.media);
     }
     
     bindEvents() {
@@ -336,6 +463,9 @@ class ProctoringApp {
         if (joinBtn) {
             joinBtn.addEventListener('click', () => this.showJoinModal());
         }
+        
+        // Rejoin a session this browser already joined
+        document.getElementById('rejoinRoomBtn')?.addEventListener('click', () => this.rejoinSavedCandidateSession());
         
         // Start/End call buttons
         document.getElementById('startCallBtn')?.addEventListener('click', () => this.startCall());
@@ -527,7 +657,9 @@ class ProctoringApp {
         
         const joinUserNameInput = document.getElementById('joinUserName');
         if (joinUserNameInput && !joinUserNameInput.value) {
-            joinUserNameInput.value = this.userName || 'Candidate';
+            const savedCandidate = this.getSavedCandidateSession();
+            const matchesSaved = savedCandidate && joinRoomIdInput && savedCandidate.room === joinRoomIdInput.value.trim().toUpperCase();
+            joinUserNameInput.value = matchesSaved ? savedCandidate.name : (this.userName || 'Candidate');
         }
     }
     
@@ -572,6 +704,9 @@ class ProctoringApp {
         try {
             const response = await fetch(`/api/validate-room/${encodeURIComponent(this.roomId)}`);
             if (!response.ok) {
+                if (response.status === 404 && this.userType === 'candidate') {
+                    this.clearSavedCandidateSession();
+                }
                 this.updateStatus('Session not found', 'disconnected');
                 this.showMessage(`❌ Session ${this.roomId} not found. Check the ID or ask for a new link.`, 'error');
                 return;
@@ -582,6 +717,11 @@ class ProctoringApp {
             this.updateStatus('Connection error', 'disconnected');
             this.showMessage('❌ Could not reach the server: ' + error.message, 'error');
             return;
+        }
+        
+        if (this.userType === 'candidate') {
+            this._joinedMediaMode = mediaMode === 'audio' ? 'audio' : 'camera';
+            this.saveCandidateSession();
         }
         
         // Wait briefly for TURN credentials, then continue with fallbacks
@@ -657,6 +797,7 @@ class ProctoringApp {
             this.startHeartbeat();
             this.sendMediaState();
             this.updateLocalVideoPlaceholder();
+            this.updateJoinButtonVisibility();
         };
         
         ws.onmessage = (event) => {
@@ -687,6 +828,7 @@ class ProctoringApp {
             if (event.code === 1008) {
                 this.updateStatus('Session unavailable', 'disconnected');
                 this.showMessage('❌ Server closed the session: ' + (event.reason || 'unavailable'), 'error');
+                this.updateJoinButtonVisibility();
                 return;
             }
             
@@ -705,6 +847,7 @@ class ProctoringApp {
         if (this._reconnectAttempts >= 5) {
             this.updateStatus('Reconnect failed', 'disconnected');
             this.showMessage('❌ Lost connection to the server. Reload the page to rejoin.', 'error');
+            this.updateJoinButtonVisibility();
             return;
         }
         
@@ -2920,6 +3063,9 @@ class ProctoringApp {
         // Ending the session closes the room for this browser
         if (this.userType === 'proctor') {
             this.clearSavedProctorSession();
+        } else {
+            // Keep the candidate session saved so it can be rejoined
+            this.roomId = null;
         }
         this.updateJoinButtonVisibility();
     }

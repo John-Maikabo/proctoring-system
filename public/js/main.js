@@ -29,6 +29,7 @@ class ProctoringApp {
         this._reconnectAttempts = 0;
         this._reconnectTimer = null;
         this._heartbeatTimer = null;
+        this._audioRetryArmed = false;
         
         // Check for existing proctor session
         this.checkSavedProctorSession();
@@ -280,6 +281,8 @@ class ProctoringApp {
             clearTimeout(this._resizeTimer);
             this._resizeTimer = setTimeout(() => this.layoutParticipantGrid(), 150);
         });
+        
+        this.armAudioRetry();
     }
     
     updateStatus(text, state = '') {
@@ -611,6 +614,7 @@ class ProctoringApp {
             if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
                 this.signaling.send(JSON.stringify({ type: 'ping' }));
             }
+            this.auditLocalSenders();
         }, 20000);
     }
     
@@ -1015,6 +1019,28 @@ class ProctoringApp {
         this.createOfferForPeer(peerId);
     }
     
+    auditLocalSenders() {
+        if (!this.localStream) return;
+        const wantedKinds = this.localStream.getTracks().map(track => track.kind);
+        
+        this.peerConnections.forEach((peerConnection, peerId) => {
+            if (peerConnection.connectionState !== 'connected') return;
+            if (peerConnection.signalingState !== 'stable') return;
+            
+            const sendKinds = new Set(
+                peerConnection.getSenders()
+                    .filter(sender => sender.track)
+                    .map(sender => sender.track.kind)
+            );
+            
+            if (wantedKinds.some(kind => !sendKinds.has(kind))) {
+                const participant = this.participants.get(peerId);
+                console.warn(`🔎 Missing local media sender for ${peerId}; republishing tracks`);
+                this.renegotiateMissingTracks(peerId, participant ? participant.name : peerId);
+            }
+        });
+    }
+    
     createPeerConnection(peerId, peerName, peerType) {
         console.log(`🚀 Creating RTCPeerConnection for ${peerName} (${peerId})`);
         
@@ -1098,15 +1124,12 @@ class ProctoringApp {
                     this.renegotiateMissingTracks(peerId, peerName);
                 }, 900);
                 
-                // Try to play video after reconnection
+                // Try to play media after reconnection
                 setTimeout(() => {
                     const videoEl = document.getElementById(`remoteVideo-${peerId}`);
                     if (videoEl && videoEl.srcObject) {
-                        console.log(`🔄 Re-playing video for ${peerName} after reconnect`);
-                        videoEl.play().catch(() => {
-                            videoEl.muted = true;
-                            videoEl.play().catch(() => {});
-                        });
+                        console.log(`🔄 Re-playing media for ${peerName} after reconnect`);
+                        this.retryRemoteAudio();
                     }
                 }, 1500);
             } else if (peerConnection.connectionState === 'failed') {
@@ -1261,6 +1284,14 @@ class ProctoringApp {
         
         this.ensureVideoContainer(peerId, peerName, peerType, stream);
         
+        const audioStatusEl = document.getElementById(`audioStatus-${peerId}`);
+        if (event.track.kind === 'audio' && audioStatusEl) {
+            audioStatusEl.textContent = 'On';
+            event.track.onmute = () => { audioStatusEl.textContent = 'Muted'; };
+            event.track.onunmute = () => { audioStatusEl.textContent = 'On'; };
+            setTimeout(() => this.retryRemoteAudio(), 300);
+        }
+        
         // Play when ANY video track arrives
         if (event.track.kind === 'video' && stream.getVideoTracks().length > 0) {
             if (this._playTimers[peerId]) clearTimeout(this._playTimers[peerId]);
@@ -1278,7 +1309,8 @@ class ProctoringApp {
                             videoEl.play().catch(() => {
                                 setTimeout(tryPlay, 2000);
                             });
-                            this.unlockRemoteAudio();
+                            this.armAudioRetry();
+                            this.showAudioUnlockPrompt();
                         });
                     };
                     
@@ -1385,22 +1417,70 @@ class ProctoringApp {
         if (statusEl) statusEl.textContent = text;
     }
     
-    unlockRemoteAudio() {
-        if (this._audioUnlockBound) return;
-        this._audioUnlockBound = true;
+    armAudioRetry() {
+        if (this._audioRetryArmed) return;
+        this._audioRetryArmed = true;
         
-        const unmute = () => {
-            document.querySelectorAll('video[id^="remoteVideo-"]').forEach(video => {
-                video.muted = false;
-                video.play().catch(() => {});
-            });
-            document.removeEventListener('pointerdown', unmute, true);
-            document.removeEventListener('keydown', unmute, true);
-            this._audioUnlockBound = false;
+        const retryIfMuted = () => {
+            const videos = Array.from(document.querySelectorAll('video[id^="remoteVideo-"]'));
+            if (videos.some(video => video.muted && video.srcObject)) {
+                this.retryRemoteAudio();
+            }
         };
         
-        document.addEventListener('pointerdown', unmute, true);
-        document.addEventListener('keydown', unmute, true);
+        ['pointerdown', 'keydown', 'touchstart'].forEach(type => {
+            document.addEventListener(type, retryIfMuted, { capture: true, passive: true });
+        });
+        
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) this.retryRemoteAudio();
+        });
+    }
+    
+    retryRemoteAudio() {
+        const videos = Array.from(document.querySelectorAll('video[id^="remoteVideo-"]'))
+            .filter(video => video.srcObject);
+        
+        if (videos.length === 0) {
+            this.hideAudioUnlockPrompt();
+            return Promise.resolve();
+        }
+        
+        const attempts = videos.map(video => {
+            video.muted = false;
+            return video.play().then(() => true).catch(() => {
+                // Keep the picture running while audio waits for a user gesture
+                video.muted = true;
+                video.play().catch(() => {});
+                return false;
+            });
+        });
+        
+        return Promise.all(attempts).then(results => {
+            if (results.every(Boolean)) {
+                this.hideAudioUnlockPrompt();
+            } else {
+                this.showAudioUnlockPrompt();
+            }
+        });
+    }
+    
+    showAudioUnlockPrompt() {
+        let btn = document.getElementById('enableAudioBtn');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.id = 'enableAudioBtn';
+            btn.type = 'button';
+            btn.className = 'btn btn-warning enable-audio-btn';
+            btn.innerHTML = '<i class="fas fa-volume-up"></i> Tap to enable audio';
+            btn.addEventListener('click', () => this.retryRemoteAudio());
+            document.body.appendChild(btn);
+        }
+        btn.classList.remove('hidden');
+    }
+    
+    hideAudioUnlockPrompt() {
+        document.getElementById('enableAudioBtn')?.classList.add('hidden');
     }
     
     async createOfferForPeer(peerId) {
@@ -1978,6 +2058,7 @@ class ProctoringApp {
         this.isVideoHidden = false;
         this.isScreenSharing = false;
         this.setScreenShareButton(false);
+        this.hideAudioUnlockPrompt();
         
         // Return the sidebar to its pre-session state
         document.getElementById('roomInfo')?.classList.add('hidden');

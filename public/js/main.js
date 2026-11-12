@@ -7,6 +7,7 @@ class ProctoringApp {
         this.screenStream = null;
         this.signaling = null;
         this.roomId = null;
+        this.roomDescription = '';
         this.userId = this.getOrCreateUserId();
         this.userType = null;
         this.userName = '';
@@ -317,12 +318,16 @@ class ProctoringApp {
             
             this.userType = 'proctor';
             
+            const descriptionInput = document.getElementById('sessionDescription');
+            const description = descriptionInput ? descriptionInput.value.trim().slice(0, 300) : '';
+            
             console.log('Creating room for:', this.userName);
-            const response = await fetch('/api/create-room?userId=' + this.userId + '&name=' + encodeURIComponent(this.userName));
+            const response = await fetch('/api/create-room?userId=' + this.userId + '&name=' + encodeURIComponent(this.userName) + '&description=' + encodeURIComponent(description));
             const data = await response.json();
             
             if (data.success) {
                 this.roomId = data.roomId;
+                this.roomDescription = data.description || description;
                 
                 // Save proctor session
                 localStorage.setItem('proctorRoom', this.roomId);
@@ -353,16 +358,19 @@ class ProctoringApp {
         
         // Show UI elements
         document.getElementById('roomInfo').classList.remove('hidden');
-        document.getElementById('mediaControls').classList.remove('hidden');
+        const mediaControls = document.getElementById('mediaControls');
+        mediaControls.classList.remove('hidden');
+        mediaControls.open = true;
         document.getElementById('chatPanel').classList.remove('hidden');
         document.getElementById('participantListContainer').classList.remove('hidden');
+        document.getElementById('proctoringControls').classList.remove('hidden');
+        document.getElementById('sessionDescriptionGroup')?.classList.add('hidden');
         
-        // Show/hide proctoring controls
-        if (this.userType === 'proctor') {
-            document.getElementById('proctoringControls').classList.remove('hidden');
-        } else {
-            document.getElementById('proctoringControls').classList.add('hidden');
-        }
+        // Snapshots stay proctor-only; screen sharing and recording are open to everyone
+        const snapshotBtn = document.getElementById('snapshotBtn');
+        if (snapshotBtn) snapshotBtn.classList.toggle('hidden', this.userType !== 'proctor');
+        
+        this.updateSessionDescription();
         
         // Hide create button
         const createBtn = document.getElementById('createRoomBtn');
@@ -375,6 +383,13 @@ class ProctoringApp {
         document.getElementById('screenShareBtn').disabled = true;
         document.getElementById('snapshotBtn').disabled = true;
         document.getElementById('recordBtn').disabled = true;
+    }
+    
+    updateSessionDescription() {
+        const descriptionEl = document.getElementById('roomDescriptionDisplay');
+        if (descriptionEl) {
+            descriptionEl.textContent = this.roomDescription || 'No description provided.';
+        }
     }
     
     showJoinModal() {
@@ -434,6 +449,8 @@ class ProctoringApp {
                 this.showMessage(`❌ Session ${this.roomId} not found. Check the ID or ask for a new link.`, 'error');
                 return;
             }
+            const roomInfo = await response.json();
+            this.roomDescription = roomInfo.description || '';
         } catch (error) {
             this.updateStatus('Connection error', 'disconnected');
             this.showMessage('❌ Could not reach the server: ' + error.message, 'error');
@@ -630,6 +647,8 @@ class ProctoringApp {
                     });
                 }
                 
+                this.roomDescription = data.description || this.roomDescription || '';
+                this.updateSessionDescription();
                 this.updateParticipantList();
                 this.showMessage(`✅ Connected as ${this.userName}`, 'success');
                 
@@ -869,10 +888,10 @@ class ProctoringApp {
             document.getElementById('toggleAudioBtn').disabled = false;
             document.getElementById('toggleVideoBtn').disabled = false;
             document.getElementById('screenShareBtn').disabled = false;
+            document.getElementById('recordBtn').disabled = false;
             
             if (this.userType === 'proctor') {
                 document.getElementById('snapshotBtn').disabled = false;
-                document.getElementById('recordBtn').disabled = false;
             }
             
             this.updateStatus('Call started', 'connected');
@@ -1578,6 +1597,14 @@ class ProctoringApp {
         }
     }
     
+    setScreenShareButton(active) {
+        const btn = document.getElementById('screenShareBtn');
+        if (!btn) return;
+        btn.innerHTML = active
+            ? '<i class="fas fa-stop"></i> Stop Sharing'
+            : '<i class="fas fa-desktop"></i> Share Screen';
+    }
+    
     async toggleScreenShare() {
         try {
             if (!this.isScreenSharing) {
@@ -1608,6 +1635,7 @@ class ProctoringApp {
                 });
                 
                 this.isScreenSharing = true;
+                this.setScreenShareButton(true);
                 this.updateParticipantList();
                 
                 this.screenStream.getVideoTracks()[0].onended = () => {
@@ -1648,6 +1676,7 @@ class ProctoringApp {
         }
         
         this.isScreenSharing = false;
+        this.setScreenShareButton(false);
         
         if (this.signaling) {
             this.signaling.send(JSON.stringify({
@@ -1743,11 +1772,6 @@ class ProctoringApp {
     }
     
     async toggleRecording() {
-        if (this.userType !== 'proctor') {
-            this.showMessage('❌ Only proctors can record sessions', 'error');
-            return;
-        }
-        
         if (!this.isRecording) {
             try {
                 if (!this.localStream) {
@@ -1876,7 +1900,8 @@ class ProctoringApp {
     shareWhatsApp() {
         const link = document.getElementById('shareLink')?.value;
         if (!link) return;
-        const text = encodeURIComponent(`Join the Zed Stream session:\n${link}`);
+        const description = this.roomDescription ? `${this.roomDescription}\n\n` : '';
+        const text = encodeURIComponent(`Join the Zed Stream session:\n${description}${link}`);
         window.open(`https://wa.me/?text=${text}`, '_blank');
     }
     
@@ -1884,7 +1909,8 @@ class ProctoringApp {
         const link = document.getElementById('shareLink')?.value;
         if (!link) return;
         const subject = encodeURIComponent('Join Zed Stream Session');
-        const body = encodeURIComponent(`You are invited to join the Zed Stream session.\n\nClick the link below to join:\n${link}`);
+        const description = this.roomDescription ? `${this.roomDescription}\n\n` : '';
+        const body = encodeURIComponent(`You are invited to join the Zed Stream session.\n\n${description}Click the link below to join:\n${link}`);
         window.open(`mailto:?subject=${subject}&body=${body}`, '_self');
     }
     
@@ -1951,6 +1977,20 @@ class ProctoringApp {
         this.isAudioMuted = false;
         this.isVideoHidden = false;
         this.isScreenSharing = false;
+        this.setScreenShareButton(false);
+        
+        // Return the sidebar to its pre-session state
+        document.getElementById('roomInfo')?.classList.add('hidden');
+        document.getElementById('mediaControls')?.classList.add('hidden');
+        document.getElementById('participantListContainer')?.classList.add('hidden');
+        document.getElementById('proctoringControls')?.classList.add('hidden');
+        document.getElementById('chatPanel')?.classList.add('hidden');
+        document.getElementById('sessionDescriptionGroup')?.classList.remove('hidden');
+        
+        this.roomDescription = '';
+        this.updateSessionDescription();
+        const descriptionInput = document.getElementById('sessionDescription');
+        if (descriptionInput) descriptionInput.value = '';
         
         const createBtn = document.getElementById('createRoomBtn');
         if (createBtn) createBtn.style.display = '';

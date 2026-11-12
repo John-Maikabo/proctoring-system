@@ -135,6 +135,27 @@ header h1 i {
     box-shadow: 0 0 0 2px rgba(76, 201, 240, 0.2);
 }
 
+.form-group textarea {
+    width: 100%;
+    padding: 12px 15px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    color: white;
+    font-family: inherit;
+    font-size: 0.95rem;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 76px;
+    transition: all 0.3s;
+}
+
+.form-group textarea:focus {
+    outline: none;
+    border-color: #4cc9f0;
+    box-shadow: 0 0 0 2px rgba(76, 201, 240, 0.2);
+}
+
 /* Buttons */
 .button-group {
     display: flex;
@@ -178,6 +199,27 @@ header h1 i {
 .btn-info { background: #17a2b8; color: white; }
 .btn-whatsapp { background: #25D366; color: white; }
 .btn-email { background: #EA4335; color: white; }
+
+.btn-start {
+    width: 100%;
+    margin-bottom: 12px;
+    padding: 16px 20px;
+    font-size: 1.1rem;
+    background: linear-gradient(135deg, #28a745, #20c997);
+    color: white;
+    animation: startPulse 2s infinite;
+}
+
+.btn-start:disabled {
+    animation: none;
+    background: #6c757d;
+}
+
+@keyframes startPulse {
+    0% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.6); }
+    70% { box-shadow: 0 0 0 12px rgba(40, 167, 69, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
+}
 
 /* Session info */
 .info-box {
@@ -226,13 +268,84 @@ header h1 i {
     gap: 10px;
 }
 
+.session-description-box {
+    background: rgba(76, 201, 240, 0.08);
+    border-left: 3px solid #4cc9f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 20px;
+}
+
+.session-description-box h4 {
+    color: #4cc9f0;
+    margin-bottom: 6px;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.session-description-box p {
+    color: #d8e2ef;
+    font-size: 0.95rem;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+/* Collapsible sidebar sections */
+.collapsible {
+    margin-top: 20px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.collapsible summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 0;
+    color: #4cc9f0;
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.collapsible summary::-webkit-details-marker {
+    display: none;
+}
+
+.collapsible summary:hover {
+    color: #7fdcff;
+}
+
+.collapsible summary .summary-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.collapsible summary .chevron {
+    color: #a9b7c6;
+    font-size: 0.8rem;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+}
+
+.collapsible[open] summary .chevron {
+    transform: rotate(180deg);
+}
+
+.collapsible-body {
+    padding-top: 12px;
+}
+
 /* Participants */
 .participant-list {
-    background: rgba(0, 0, 0, 0.3);
-    padding: 15px;
-    border-radius: 10px;
-    margin-top: 20px;
-    max-height: 300px;
+    max-height: 280px;
     overflow-y: auto;
 }
 
@@ -420,18 +533,10 @@ video {
 }
 
 /* Controls */
-.controls {
-    margin-top: 20px;
-}
-
 .control-buttons {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
-}
-
-.proctoring-controls {
-    margin-top: 20px;
 }
 
 .tool-buttons {
@@ -565,9 +670,9 @@ footer {
     .video-grid-container { gap: 8px; }
     .remote-video-container .video-header { font-size: 0.7rem; padding: 6px 8px; }
     .remote-video-container .video-status { font-size: 0.65rem; padding: 4px 8px; }
-    .controls { margin-top: 10px; }
     .control-buttons { gap: 6px; }
     .btn { padding: 8px 12px; font-size: 0.85rem; }
+    .btn-start { padding: 13px 16px; font-size: 1rem; }
     .participant-list { max-height: 200px; }
     .chat-messages { height: 150px; }
 }

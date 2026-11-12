@@ -33,6 +33,11 @@
                     <input type="text" id="userName" placeholder="Enter your name" value="">
                 </div>
                 
+                <div class="form-group" id="sessionDescriptionGroup">
+                    <label for="sessionDescription"><i class="fas fa-align-left"></i> Session Description:</label>
+                    <textarea id="sessionDescription" rows="3" maxlength="300" placeholder="What is this session about? Participants will see this."></textarea>
+                </div>
+                
                 <div class="button-group">
                     <button id="createRoomBtn" class="btn btn-primary">
                         <i class="fas fa-plus-circle"></i> Create New Session
@@ -42,60 +47,101 @@
                     </button>
                 </div>
                 
-                <!-- Room Info -->
-                <div id="roomInfo" class="hidden">
-                    <h3><i class="fas fa-info-circle"></i> Session Info</h3>
-                    <div class="info-box">
-                        <p><strong>Session ID:</strong> <span id="roomIdDisplay">-</span></p>
-                        <p><strong>Participants:</strong> <span id="participantCount">0</span>/10</p>
-                        <p><strong>Your Role:</strong> <span id="userRole">-</span></p>
-                        <p><strong>Your Name:</strong> <span id="displayUserName">-</span></p>
-                    </div>
-                    
-                    <!-- Share Link -->
-                    <div class="share-section">
-                        <h4><i class="fas fa-share-alt"></i> Share Session Link</h4>
-                        <div class="share-box">
-                            <input type="text" id="shareLink" readonly>
-                            <button id="copyLinkBtn" class="btn btn-primary">
-                                <i class="fas fa-copy"></i> Copy
-                            </button>
+                <!-- Session Info -->
+                <details id="roomInfo" class="collapsible hidden" open>
+                    <summary>
+                        <span class="summary-label"><i class="fas fa-info-circle"></i> Session Info</span>
+                        <i class="fas fa-chevron-down chevron"></i>
+                    </summary>
+                    <div class="collapsible-body">
+                        <div class="info-box">
+                            <p><strong>Session ID:</strong> <span id="roomIdDisplay">-</span></p>
+                            <p><strong>Participants:</strong> <span id="participantCount">0</span>/10</p>
+                            <p><strong>Your Role:</strong> <span id="userRole">-</span></p>
+                            <p><strong>Your Name:</strong> <span id="displayUserName">-</span></p>
                         </div>
-                        <div class="share-buttons">
-                            <button id="shareWhatsAppBtn" class="btn btn-whatsapp">
-                                <i class="fab fa-whatsapp"></i> WhatsApp
-                            </button>
-                            <button id="shareEmailBtn" class="btn btn-email">
-                                <i class="fas fa-envelope"></i> Email
-                            </button>
+                        
+                        <div class="session-description-box">
+                            <h4><i class="fas fa-align-left"></i> About this session</h4>
+                            <p id="roomDescriptionDisplay">No description provided.</p>
+                        </div>
+                        
+                        <!-- Share Link -->
+                        <div class="share-section">
+                            <h4><i class="fas fa-share-alt"></i> Share Session Link</h4>
+                            <div class="share-box">
+                                <input type="text" id="shareLink" readonly>
+                                <button id="copyLinkBtn" class="btn btn-primary">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                            </div>
+                            <div class="share-buttons">
+                                <button id="shareWhatsAppBtn" class="btn btn-whatsapp">
+                                    <i class="fab fa-whatsapp"></i> WhatsApp
+                                </button>
+                                <button id="shareEmailBtn" class="btn btn-email">
+                                    <i class="fas fa-envelope"></i> Email
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
+                </details>
                 
                 <!-- Participant List -->
-                <div class="participant-list hidden" id="participantListContainer">
-                    <h3><i class="fas fa-users"></i> Participants</h3>
-                    <div id="participantList"></div>
-                </div>
+                <details class="collapsible hidden" id="participantListContainer" open>
+                    <summary>
+                        <span class="summary-label"><i class="fas fa-users"></i> Participants</span>
+                        <i class="fas fa-chevron-down chevron"></i>
+                    </summary>
+                    <div class="collapsible-body">
+                        <div id="participantList"></div>
+                    </div>
+                </details>
                 
                 <!-- Media Controls -->
-                <div class="controls hidden" id="mediaControls">
-                    <h3><i class="fas fa-sliders-h"></i> Media Controls</h3>
-                    <div class="control-buttons">
-                        <button id="startCallBtn" class="btn btn-success">
-                            <i class="fas fa-video"></i> Start Camera
+                <details class="collapsible hidden" id="mediaControls" open>
+                    <summary>
+                        <span class="summary-label"><i class="fas fa-sliders-h"></i> Media Controls</span>
+                        <i class="fas fa-chevron-down chevron"></i>
+                    </summary>
+                    <div class="collapsible-body">
+                        <button id="startCallBtn" class="btn btn-start">
+                            <i class="fas fa-video"></i> Start Camera &amp; Microphone
                         </button>
-                        <button id="endCallBtn" class="btn btn-danger" disabled>
-                            <i class="fas fa-phone-slash"></i> End Session
-                        </button>
-                        <button id="toggleAudioBtn" class="btn btn-warning" disabled>
-                            <i class="fas fa-microphone"></i> Mute Audio
-                        </button>
-                        <button id="toggleVideoBtn" class="btn btn-warning" disabled>
-                            <i class="fas fa-video"></i> Hide Video
-                        </button>
+                        <div class="control-buttons">
+                            <button id="endCallBtn" class="btn btn-danger" disabled>
+                                <i class="fas fa-phone-slash"></i> End Session
+                            </button>
+                            <button id="toggleAudioBtn" class="btn btn-warning" disabled>
+                                <i class="fas fa-microphone"></i> Mute Audio
+                            </button>
+                            <button id="toggleVideoBtn" class="btn btn-warning" disabled>
+                                <i class="fas fa-video"></i> Hide Video
+                            </button>
+                        </div>
                     </div>
-                </div>
+                </details>
+                
+                <!-- Session Tools -->
+                <details class="collapsible hidden" id="proctoringControls">
+                    <summary>
+                        <span class="summary-label"><i class="fas fa-toolbox"></i> Session Tools</span>
+                        <i class="fas fa-chevron-down chevron"></i>
+                    </summary>
+                    <div class="collapsible-body">
+                        <div class="tool-buttons">
+                            <button id="screenShareBtn" class="btn btn-warning" disabled>
+                                <i class="fas fa-desktop"></i> Share Screen
+                            </button>
+                            <button id="recordBtn" class="btn btn-info" disabled>
+                                <i class="fas fa-circle"></i> Start Recording
+                            </button>
+                            <button id="snapshotBtn" class="btn btn-info" disabled>
+                                <i class="fas fa-camera"></i> Take Snapshot
+                            </button>
+                        </div>
+                    </div>
+                </details>
             </div>
             
             <!-- Right Panel - Videos & Tools -->
@@ -123,22 +169,6 @@
                 </div>
                 <div id="remoteVideosContainer" class="video-grid-container">
                     <!-- Remote videos will be added here dynamically -->
-                </div>
-                
-                <!-- Proctoring Controls (Only for Proctor) -->
-                <div class="proctoring-controls hidden" id="proctoringControls">
-                    <h3><i class="fas fa-eye"></i> Proctoring Tools</h3>
-                    <div class="tool-buttons">
-                        <button id="screenShareBtn" class="btn btn-warning" disabled>
-                            <i class="fas fa-desktop"></i> Share Screen
-                        </button>
-                        <button id="snapshotBtn" class="btn btn-info" disabled>
-                            <i class="fas fa-camera"></i> Take Snapshot
-                        </button>
-                        <button id="recordBtn" class="btn btn-info" disabled>
-                            <i class="fas fa-circle"></i> Start Recording
-                        </button>
-                    </div>
                 </div>
                 
                 <!-- Chat (For Everyone) -->

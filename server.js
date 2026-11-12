@@ -163,6 +163,7 @@ app.get('/api/create-room', (req, res) => {
     const roomId = generateRoomId();
     const userId = req.query.userId || generateUserId();
     const userName = req.query.name || 'Proctor';
+    const description = (req.query.description || '').toString().trim().slice(0, 300);
     
     rooms.set(roomId, {
         id: roomId,
@@ -170,6 +171,7 @@ app.get('/api/create-room', (req, res) => {
         createdAt: Date.now(),
         proctor: userId,
         maxParticipants: 10,
+        description: description,
         isActive: false
     });
     
@@ -180,6 +182,7 @@ app.get('/api/create-room', (req, res) => {
         roomId: roomId,
         userId: userId,
         userName: userName,
+        description: description,
         link: roomLink,
         message: 'Room created successfully',
         maxParticipants: 10
@@ -203,6 +206,7 @@ app.get('/api/room/:roomId', (req, res) => {
     res.json({
         roomId: room.id,
         proctor: room.proctor,
+        description: room.description || '',
         participants: participants,
         participantCount: room.participants.size,
         maxParticipants: room.maxParticipants,
@@ -221,7 +225,8 @@ app.get('/api/validate-room/:roomId', (req, res) => {
     res.json({
         roomId: room.id,
         exists: true,
-        proctor: room.proctor
+        proctor: room.proctor,
+        description: room.description || ''
     });
 });
 
@@ -323,6 +328,7 @@ wss.on('connection', (ws, req) => {
         roomId: roomId,
         userType: userType,
         userName: userName,
+        description: room.description || '',
         participants: participantList,
         participantCount: room.participants.size,
         maxParticipants: room.maxParticipants,

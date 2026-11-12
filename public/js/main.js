@@ -43,6 +43,8 @@ class ProctoringApp {
         this._bgBusy = false;
         this._bgActive = false;
         this._bgGeneration = 0;
+        this.screenSharers = new Set();
+        this.activePresenterId = null;
         
         // Check for existing proctor session
         this.checkSavedProctorSession();
@@ -123,17 +125,15 @@ class ProctoringApp {
                 }
                 
                 const isSavedProctor = savedRoom === roomId && savedUserId === this.userId;
-                if (isSavedProctor) {
-                    console.log('Auto-joining room:', this.roomId, 'as', this.userType);
-                    this.joinExistingRoom();
-                } else {
+                if (!isSavedProctor) {
                     console.log('Showing join options for room:', roomId);
                     this.showJoinModal();
                 }
             }
             
-            // Show proctor rejoin panel if applicable
+            // The rejoin panel verifies the room still exists before offering it
             this.showProctorRejoinPanel();
+            this.updateLocalVideoPlaceholder();
         }, 100);
     }
     
@@ -193,66 +193,132 @@ class ProctoringApp {
         return this.getFallbackIceServers();
     }
     
-    showProctorRejoinPanel() {
+    clearSavedProctorSession() {
+        const sessionRoom = localStorage.getItem('proctorRoom');
+        
+        localStorage.removeItem('proctorRoom');
+        localStorage.removeItem('proctorUserId');
+        localStorage.removeItem('proctorName');
+        localStorage.removeItem('proctorDescription');
+        
+        if (this.roomId && this.roomId === sessionRoom) {
+            this.roomId = null;
+        }
+        
+        const joinInput = document.getElementById('joinRoomId');
+        if (joinInput && sessionRoom && joinInput.value.trim().toUpperCase() === sessionRoom.toUpperCase()) {
+            joinInput.value = '';
+        }
+        
+        // Do not leave a dead proctor session in the address bar
+        const params = new URLSearchParams(window.location.search);
+        if (sessionRoom && params.get('type') === 'proctor' && params.get('room') === sessionRoom) {
+            params.delete('room');
+            params.delete('type');
+            const query = params.toString();
+            window.history.replaceState({}, '', window.location.pathname + (query ? '?' + query : ''));
+        }
+    }
+    
+    updateJoinButtonVisibility() {
+        const joinBtn = document.getElementById('joinRoomBtn');
+        if (!joinBtn) return;
+        const savedRoom = localStorage.getItem('proctorRoom');
+        const hasActiveSession = !!savedRoom && savedRoom === this.roomId;
+        joinBtn.classList.toggle('hidden', !hasActiveSession);
+    }
+    
+    async showProctorRejoinPanel() {
         const savedRoom = localStorage.getItem('proctorRoom');
         const savedUserId = localStorage.getItem('proctorUserId');
         
-        if (savedRoom && savedUserId === this.userId) {
-            // Create or show rejoin panel
-            let panel = document.getElementById('proctorRejoinPanel');
-            if (!panel) {
-                panel = document.createElement('div');
-                panel.id = 'proctorRejoinPanel';
-                panel.className = 'panel';
-                panel.style.cssText = `
-                    position: fixed;
-                    top: 20px;
-                    left: 50%;
-                    transform: translateX(-50%);
-                    background: rgba(0,0,0,0.9);
-                    border: 2px solid #4cc9f0;
-                    z-index: 1000;
-                    padding: 20px;
-                    border-radius: 10px;
-                    min-width: 300px;
-                `;
-                
-                panel.innerHTML = `
-                    <h3><i class="fas fa-user-shield"></i> Proctor Session Detected</h3>
-                    <p>You have an existing proctor session for room: <strong>${savedRoom}</strong></p>
-                    <div style="display: flex; gap: 10px; margin-top: 15px;">
-                        <button id="rejoinAsProctorBtn" class="btn btn-primary">
-                            <i class="fas fa-user-shield"></i> Rejoin as Proctor
-                        </button>
-                        <button id="joinAsCandidateBtn" class="btn btn-secondary">
-                            <i class="fas fa-user"></i> Join as Candidate
-                        </button>
-                        <button id="dismissRejoinBtn" class="btn btn-warning">
-                            <i class="fas fa-times"></i> Dismiss
-                        </button>
-                    </div>
-                `;
-                
-                document.body.appendChild(panel);
-                
-                document.getElementById('rejoinAsProctorBtn').addEventListener('click', () => {
-                    this.roomId = savedRoom;
-                    this.userType = 'proctor';
-                    this.userName = localStorage.getItem('proctorName') || 'Proctor';
-                    this.joinExistingRoom();
-                    panel.remove();
-                });
-                
-                document.getElementById('joinAsCandidateBtn').addEventListener('click', () => {
-                    localStorage.removeItem('proctorRoom');
-                    localStorage.removeItem('proctorUserId');
-                    panel.remove();
-                });
-                
-                document.getElementById('dismissRejoinBtn').addEventListener('click', () => {
-                    panel.remove();
-                });
+        if (!savedRoom || savedUserId !== this.userId) return;
+        
+        let roomInfo = null;
+        let roomMissing = false;
+        try {
+            const response = await fetch(`/api/room/${encodeURIComponent(savedRoom)}`);
+            if (response.ok) {
+                roomInfo = await response.json();
+            } else if (response.status === 404) {
+                roomMissing = true;
             }
+        } catch (error) {
+            console.warn('Could not verify saved session:', error.message);
+        }
+        
+        // The saved session is only offered while the room still exists
+        if (roomMissing) {
+            this.clearSavedProctorSession();
+            this.updateJoinButtonVisibility();
+            console.log(`Saved proctor session ${savedRoom} has ended; cleared it`);
+            return;
+        }
+        
+        // Leave a session that cannot be verified untouched
+        if (!roomInfo) return;
+        
+        this.updateJoinButtonVisibility();
+        
+        const description = roomInfo.description || localStorage.getItem('proctorDescription') || '';
+        
+        // Create or show rejoin panel
+        let panel = document.getElementById('proctorRejoinPanel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'proctorRejoinPanel';
+            panel.className = 'panel';
+            panel.style.cssText = `
+                position: fixed;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(0,0,0,0.9);
+                border: 2px solid #4cc9f0;
+                z-index: 1000;
+                padding: 20px;
+                border-radius: 10px;
+                min-width: 300px;
+                max-width: 520px;
+            `;
+            
+            panel.innerHTML = `
+                <h3><i class="fas fa-user-shield"></i> Proctor Session Detected</h3>
+                <p>You have an existing proctor session for room: <strong>${savedRoom}</strong></p>
+                ${description ? `<p class="rejoin-description"><i class="fas fa-align-left"></i> ${this.escapeHtml(description)}</p>` : ''}
+                <div style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
+                    <button id="rejoinAsProctorBtn" class="btn btn-primary">
+                        <i class="fas fa-user-shield"></i> Rejoin as Proctor
+                    </button>
+                    <button id="joinAsCandidateBtn" class="btn btn-secondary">
+                        <i class="fas fa-user"></i> Join as Candidate
+                    </button>
+                    <button id="dismissRejoinBtn" class="btn btn-warning">
+                        <i class="fas fa-times"></i> Dismiss
+                    </button>
+                </div>
+            `;
+            
+            document.body.appendChild(panel);
+            
+            document.getElementById('rejoinAsProctorBtn').addEventListener('click', () => {
+                this.roomId = savedRoom;
+                this.userType = 'proctor';
+                this.userName = localStorage.getItem('proctorName') || 'Proctor';
+                this.updateJoinButtonVisibility();
+                this.joinExistingRoom();
+                panel.remove();
+            });
+            
+            document.getElementById('joinAsCandidateBtn').addEventListener('click', () => {
+                this.clearSavedProctorSession();
+                this.updateJoinButtonVisibility();
+                panel.remove();
+            });
+            
+            document.getElementById('dismissRejoinBtn').addEventListener('click', () => {
+                panel.remove();
+            });
         }
     }
     
@@ -283,6 +349,8 @@ class ProctoringApp {
         document.getElementById('cancelJoinBtn')?.addEventListener('click', () => this.cancelJoin());
         document.getElementById('backgroundSelect')?.addEventListener('change', (e) => this.changeBackground(e.target.value));
         document.getElementById('sessionDescription')?.addEventListener('input', (e) => e.target.classList.remove('input-error'));
+        document.getElementById('userName')?.addEventListener('input', (e) => e.target.classList.remove('input-error'));
+        document.getElementById('joinUserName')?.addEventListener('input', (e) => e.target.classList.remove('input-error'));
         document.getElementById('toggleAudioBtn')?.addEventListener('click', () => this.toggleAudio());
         document.getElementById('toggleVideoBtn')?.addEventListener('click', () => this.toggleVideo());
         document.getElementById('screenShareBtn')?.addEventListener('click', () => this.toggleScreenShare());
@@ -336,11 +404,17 @@ class ProctoringApp {
             this.showMessage('Creating session...');
             
             const nameInput = document.getElementById('userName');
-            if (nameInput && nameInput.value.trim()) {
-                this.userName = nameInput.value.trim();
-            } else {
-                this.userName = 'Proctor';
+            if (!nameInput || !nameInput.value.trim()) {
+                this.updateStatus('Name required', 'disconnected');
+                this.showMessage('❌ Please enter your name before creating the session', 'error');
+                if (nameInput) {
+                    nameInput.classList.add('input-error');
+                    nameInput.focus();
+                }
+                return;
             }
+            this.userName = nameInput.value.trim().slice(0, 60);
+            nameInput.classList.remove('input-error');
             
             this.userType = 'proctor';
             
@@ -374,6 +448,7 @@ class ProctoringApp {
                 localStorage.setItem('proctorRoom', this.roomId);
                 localStorage.setItem('proctorUserId', this.userId);
                 localStorage.setItem('proctorName', this.userName);
+                localStorage.setItem('proctorDescription', this.roomDescription);
                 
                 this.updateRoomUI();
                 this.updateStatus('Session created', 'connected');
@@ -416,6 +491,8 @@ class ProctoringApp {
         // Hide create button
         const createBtn = document.getElementById('createRoomBtn');
         if (createBtn) createBtn.style.display = 'none';
+        
+        this.updateJoinButtonVisibility();
         
         // Set button states
         document.getElementById('endCallBtn').disabled = true;
@@ -470,11 +547,17 @@ class ProctoringApp {
         }
         
         const nameInput = document.getElementById('joinUserName');
-        if (nameInput && nameInput.value.trim()) {
-            this.userName = nameInput.value.trim();
-        } else {
-            this.userName = 'Candidate';
+        const name = nameInput ? nameInput.value.trim() : '';
+        if (!name) {
+            this.showMessage('❌ Please enter your name', 'error');
+            if (nameInput) {
+                nameInput.classList.add('input-error');
+                nameInput.focus();
+            }
+            return;
         }
+        this.userName = name.slice(0, 60);
+        nameInput.classList.remove('input-error');
         
         this.roomId = roomId;
         this.userType = 'candidate';
@@ -569,6 +652,8 @@ class ProctoringApp {
             this.updateStatus('Connected to server', 'connected');
             this.showMessage(wasReconnecting ? '🔄 Reconnected to server' : 'Connected to signaling server', 'success');
             this.startHeartbeat();
+            this.sendMediaState();
+            this.updateLocalVideoPlaceholder();
         };
         
         ws.onmessage = (event) => {
@@ -650,6 +735,9 @@ class ProctoringApp {
         const remoteVideosContainer = document.getElementById('remoteVideosContainer');
         if (remoteVideosContainer) remoteVideosContainer.innerHTML = '';
         
+        this.screenSharers.clear();
+        this.activePresenterId = null;
+        this.updatePresentationView();
         this.updateParticipantList();
     }
     
@@ -680,6 +768,8 @@ class ProctoringApp {
                 
                 this.participants.clear();
                 this.remoteStreams.clear();
+                this.screenSharers.clear();
+                this.activePresenterId = null;
                 
                 if (data.participants && Array.isArray(data.participants)) {
                     data.participants.forEach(participant => {
@@ -688,17 +778,25 @@ class ProctoringApp {
                                 id: participant.id,
                                 name: participant.name,
                                 type: participant.type,
-                                isScreenSharing: false
+                                isScreenSharing: !!participant.isScreenSharing,
+                                mediaState: participant.mediaState || null
                             });
+                            
+                            if (participant.isScreenSharing) {
+                                this.screenSharers.add(participant.id);
+                            }
                             
                             console.log('👤 Found existing participant:', participant.name);
                         }
                     });
                 }
                 
+                this.activePresenterId = Array.from(this.screenSharers).pop() || null;
+                
                 this.roomDescription = data.description || this.roomDescription || '';
                 this.updateSessionDescription();
                 this.updateParticipantList();
+                this.updatePresentationView();
                 this.showMessage(`✅ Connected as ${this.userName}`, 'success');
                 
                 // If we already have local stream, connect to existing participants
@@ -724,6 +822,8 @@ class ProctoringApp {
                 });
                 
                 this.updateParticipantList();
+                this.updatePresentationView();
+                this.sendMediaState();
                 this.showMessage(`👤 ${data.userName} joined`, 'success');
                 
                 // Connect to the new participant if we have local stream
@@ -777,6 +877,7 @@ class ProctoringApp {
                 console.log('👋 User left:', data.userName);
                 this.participants.delete(data.userId);
                 this.updateParticipantList();
+                this.stopPresentation(data.userId);
                 this.showMessage(`👤 ${data.userName} left`, 'info');
                 
                 if (this.peerConnections.has(data.userId)) {
@@ -787,21 +888,34 @@ class ProctoringApp {
                 this.removeRemoteVideo(data.userId);
                 break;
                 
-            case 'screen-sharing':
+            case 'screen-sharing': {
                 const participant = this.participants.get(data.userId);
                 if (participant) {
                     participant.isScreenSharing = data.active;
-                    this.updateParticipantList();
-                    
-                    const videoContainer = document.getElementById(`remoteVideoContainer-${data.userId}`);
-                    if (videoContainer) {
-                        const title = videoContainer.querySelector('.video-header h3');
-                        if (title) {
-                            title.innerHTML = `${data.userName} ${data.active ? '🖥️' : '📹'}`;
-                        }
+                    if (data.active) {
+                        this.startPresentation(data.userId);
+                    } else {
+                        this.stopPresentation(data.userId);
                     }
+                    this.updateParticipantList();
+                    this.updateRemoteMediaIndicators(data.userId);
                 }
                 break;
+            }
+                
+            case 'media-state': {
+                const mediaParticipant = this.participants.get(data.userId);
+                if (mediaParticipant) {
+                    mediaParticipant.mediaState = {
+                        audio: data.audio !== false,
+                        video: data.video !== false,
+                        camera: data.camera !== false
+                    };
+                    this.updateRemoteMediaIndicators(data.userId);
+                    this.updatePresentationView();
+                }
+                break;
+            }
                 
             case 'chat':
                 this.displayChatMessage(data.senderName, data.message, data.senderId !== this.userId);
@@ -892,6 +1006,80 @@ class ProctoringApp {
         root.style.setProperty('--grid-cols', columns);
     }
     
+    startPresentation(presenterId) {
+        if (!presenterId) return;
+        this.screenSharers.add(presenterId);
+        this.activePresenterId = presenterId;
+        this.updatePresentationView();
+    }
+    
+    stopPresentation(presenterId) {
+        this.screenSharers.delete(presenterId);
+        if (this.activePresenterId === presenterId) {
+            const remaining = Array.from(this.screenSharers);
+            this.activePresenterId = remaining.length ? remaining[remaining.length - 1] : null;
+        }
+        this.updatePresentationView();
+    }
+    
+    getPresentationStream(presenterId) {
+        if (!presenterId) return null;
+        
+        if (presenterId === this.userId) {
+            return this.screenStream || null;
+        }
+        
+        const stream = this.remoteStreams.get(presenterId);
+        return stream && stream.getVideoTracks().length > 0 ? stream : null;
+    }
+    
+    updatePresentationView() {
+        const content = document.getElementById('videoContent');
+        const stage = document.getElementById('presentationStage');
+        const video = document.getElementById('presentationVideo');
+        const label = document.getElementById('presentationLabel');
+        if (!content || !stage || !video) return;
+        
+        // Fall back to another active sharer if the current one stopped
+        if (!this.activePresenterId || !this.screenSharers.has(this.activePresenterId)) {
+            const remaining = Array.from(this.screenSharers);
+            this.activePresenterId = remaining.length ? remaining[remaining.length - 1] : null;
+        }
+        
+        if (!this.activePresenterId) {
+            content.classList.remove('presenting');
+            stage.classList.add('hidden');
+            if (video.srcObject) video.srcObject = null;
+            this.layoutParticipantGrid();
+            this.updateLocalVideoPlaceholder();
+            return;
+        }
+        
+        const stream = this.getPresentationStream(this.activePresenterId);
+        content.classList.add('presenting');
+        stage.classList.remove('hidden');
+        
+        if (stream && video.srcObject !== stream) {
+            video.srcObject = stream;
+            video.play().catch(() => {});
+        } else if (!stream && video.srcObject) {
+            video.srcObject = null;
+        }
+        
+        if (label) {
+            if (this.activePresenterId === this.userId) {
+                label.textContent = 'You are sharing your screen';
+            } else {
+                const participant = this.participants.get(this.activePresenterId);
+                const name = participant ? participant.name : 'A participant';
+                label.textContent = `${name} is sharing their screen`;
+            }
+        }
+        
+        this.layoutParticipantGrid();
+        this.updateLocalVideoPlaceholder();
+    }
+    
     getAudioConstraints() {
         return {
             echoCancellation: true,
@@ -957,6 +1145,8 @@ class ProctoringApp {
             this.updateStatus('Call started', 'connected');
             this.showMessage('✅ Camera and microphone started!', 'success');
             
+            this.updateLocalVideoPlaceholder();
+            this.sendMediaState();
             this.connectAndPublishTracks(1000);
             
         } catch (error) {
@@ -994,8 +1184,10 @@ class ProctoringApp {
                 document.getElementById('snapshotBtn').disabled = false;
             }
             
+            this.showLocalVideo();
             this.updateStatus('Audio connected', 'connected');
             this.showMessage('🎤 Joined with audio only. Start your camera whenever you are ready.', 'success');
+            this.sendMediaState();
         } catch (error) {
             console.error('❌ Error starting microphone:', error);
             this.updateStatus('Microphone error', 'disconnected');
@@ -1027,6 +1219,8 @@ class ProctoringApp {
             this.updateStatus('Camera started', 'connected');
             this.showMessage('✅ Camera started', 'success');
             
+            this.updateLocalVideoPlaceholder();
+            this.sendMediaState();
             this.connectAndPublishTracks(800);
         } catch (error) {
             console.error('❌ Error starting camera:', error);
@@ -1037,12 +1231,98 @@ class ProctoringApp {
     
     showLocalVideo() {
         const localVideo = document.getElementById('localVideo');
-        if (!localVideo || !this.localStream) return;
-        localVideo.srcObject = this.localStream;
+        if (!localVideo) return;
+        
+        // While sharing, the local tile previews the shared screen
+        const source = this.isScreenSharing && this.screenStream ? this.screenStream : this.localStream;
+        if (!source) {
+            this.updateLocalVideoPlaceholder();
+            return;
+        }
+        
+        if (localVideo.srcObject !== source) {
+            localVideo.srcObject = source;
+        }
         localVideo.onloadedmetadata = () => {
             localVideo.play().catch(e => console.log('Play error:', e));
         };
         localVideo.play().catch(() => {});
+        this.updateLocalVideoPlaceholder();
+    }
+    
+    updateLocalVideoPlaceholder() {
+        const placeholder = document.getElementById('localVideoPlaceholder');
+        const text = document.getElementById('localPlaceholderText');
+        if (!placeholder) return;
+        
+        const hasVideo = !!(this.localStream && this.localStream.getVideoTracks().length > 0);
+        const hasAudio = !!(this.localStream && this.localStream.getAudioTracks().length > 0);
+        // The local tile previews the screen while sharing
+        const showVideo = this.isScreenSharing || (hasVideo && !this.isVideoHidden);
+        
+        placeholder.classList.toggle('hidden', showVideo);
+        if (text) {
+            if (this.isScreenSharing) {
+                text.textContent = 'Sharing your screen';
+            } else if (hasVideo) {
+                text.textContent = 'Camera off';
+            } else if (hasAudio) {
+                text.textContent = 'Audio only';
+            } else {
+                text.textContent = 'Camera off';
+            }
+        }
+    }
+    
+    sendMediaState() {
+        if (!this.signaling || this.signaling.readyState !== WebSocket.OPEN) return;
+        
+        const audioOn = !!(this.localStream && this.localStream.getAudioTracks().some(track => track.enabled));
+        const videoOn = !!(this.localStream && this.localStream.getVideoTracks().some(track => track.enabled));
+        
+        const hasCamera = !!(this.localStream && this.localStream.getVideoTracks().length > 0);
+        
+        this.signaling.send(JSON.stringify({
+            type: 'media-state',
+            audio: audioOn,
+            video: videoOn,
+            camera: hasCamera
+        }));
+    }
+    
+    updateRemoteMediaIndicators(peerId) {
+        const participant = this.participants.get(peerId);
+        if (!participant) return;
+        
+        const stream = this.remoteStreams.get(peerId);
+        const media = participant.mediaState || {};
+        const hasLiveVideo = !!(
+            stream &&
+            stream.getVideoTracks().some(track => track.readyState === 'live' && !track.muted) &&
+            media.video !== false
+        );
+        const audioMuted = media.audio === false;
+        
+        const audioEl = document.getElementById(`audioStatus-${peerId}`);
+        if (audioEl) audioEl.textContent = audioMuted ? 'Muted' : 'On';
+        
+        const videoEl = document.getElementById(`videoStatus-${peerId}`);
+        if (videoEl) videoEl.textContent = hasLiveVideo ? 'On' : 'Off';
+        
+        const placeholder = document.getElementById(`videoPlaceholder-${peerId}`);
+        if (placeholder) {
+            placeholder.classList.toggle('hidden', hasLiveVideo || participant.isScreenSharing);
+            const text = document.getElementById(`videoPlaceholderText-${peerId}`);
+            if (text) {
+                if (media.camera === false) {
+                    text.textContent = 'Audio only';
+                } else if (media.video === false) {
+                    text.textContent = 'Camera off';
+                } else {
+                    text.textContent = hasLiveVideo ? 'Camera on' : 'Camera off';
+                }
+            }
+        }
     }
     
     connectAndPublishTracks(delay = 1000) {
@@ -1374,18 +1654,36 @@ class ProctoringApp {
     ensureLocalTracks(peerConnection) {
         if (!this.localStream) return 0;
         
+        const senders = peerConnection.getSenders();
         const sentTrackIds = new Set(
-            peerConnection.getSenders()
+            senders
                 .map(sender => sender.track && sender.track.id)
                 .filter(Boolean)
         );
         
         let added = 0;
         this.localStream.getTracks().forEach(track => {
-            if (!sentTrackIds.has(track.id)) {
-                peerConnection.addTrack(track, this.localStream);
+            if (sentTrackIds.has(track.id)) return;
+            
+            // The shared screen owns the video slot until sharing stops
+            if (this.isScreenSharing && track.kind === 'video') return;
+            
+            // Reuse an empty video slot instead of adding a second video sender
+            const reusable = track.kind === 'video'
+                ? senders.find(sender => !sender.track || sender.__sourceKind === 'video')
+                : null;
+            
+            if (reusable) {
+                reusable.replaceTrack(track).catch(error => {
+                    console.warn('Could not restore local track:', error.message);
+                });
+                delete reusable.__sourceKind;
                 added++;
+                return;
             }
+            
+            peerConnection.addTrack(track, this.localStream);
+            added++;
         });
         
         return added;
@@ -1675,13 +1973,23 @@ class ProctoringApp {
         
         this.ensureVideoContainer(peerId, peerName, peerType, stream);
         
-        const audioStatusEl = document.getElementById(`audioStatus-${peerId}`);
-        if (event.track.kind === 'audio' && audioStatusEl) {
-            audioStatusEl.textContent = 'On';
-            event.track.onmute = () => { audioStatusEl.textContent = 'Muted'; };
-            event.track.onunmute = () => { audioStatusEl.textContent = 'On'; };
+        if (event.track.kind === 'audio') {
             setTimeout(() => this.retryRemoteAudio(), 300);
         }
+        
+        if (event.track.kind === 'video') {
+            event.track.onmute = () => {
+                this.updateRemoteMediaIndicators(peerId);
+                this.updatePresentationView();
+            };
+            event.track.onunmute = () => {
+                this.updateRemoteMediaIndicators(peerId);
+                this.updatePresentationView();
+            };
+        }
+        
+        this.updateRemoteMediaIndicators(peerId);
+        this.updatePresentationView();
         
         // Play when ANY video track arrives
         if (event.track.kind === 'video' && stream.getVideoTracks().length > 0) {
@@ -1755,6 +2063,15 @@ class ProctoringApp {
             videoElement.playsInline = true;
             videoElement.muted = false;
             
+            // Person-icon overlay for audio-only or camera-off participants
+            const placeholder = document.createElement('div');
+            placeholder.className = 'video-placeholder';
+            placeholder.id = `videoPlaceholder-${peerId}`;
+            placeholder.innerHTML = `
+                <i class="fas fa-user"></i>
+                <span id="videoPlaceholderText-${peerId}">Camera off</span>
+            `;
+            
             // Create status bar
             const statusBar = document.createElement('div');
             statusBar.className = 'video-status';
@@ -1763,6 +2080,7 @@ class ProctoringApp {
             // Assemble container
             videoContainer.appendChild(header);
             videoContainer.appendChild(videoElement);
+            videoContainer.appendChild(placeholder);
             videoContainer.appendChild(statusBar);
             remoteVideosContainer.appendChild(videoContainer);
 
@@ -1792,6 +2110,8 @@ class ProctoringApp {
                 : 'Connecting media...';
             this.setPeerStatus(peerId, label);
         }
+        
+        this.updateRemoteMediaIndicators(peerId);
     }
     
     removeRemoteVideo(peerId) {
@@ -2076,51 +2396,79 @@ class ProctoringApp {
             : '<i class="fas fa-desktop"></i> Share Screen';
     }
     
+    sendScreenSharing(active) {
+        if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+            this.signaling.send(JSON.stringify({
+                type: 'screen-sharing',
+                active: active
+            }));
+        }
+    }
+    
     async toggleScreenShare() {
+        if (this.isScreenSharing) {
+            this.stopScreenShare();
+            return;
+        }
+        
         try {
-            if (!this.isScreenSharing) {
-                this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        cursor: "always",
-                        displaySurface: "monitor"
-                    },
-                    audio: true
-                });
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    cursor: 'always',
+                    displaySurface: 'monitor'
+                },
+                audio: true
+            });
+            
+            const screenTrack = stream.getVideoTracks()[0];
+            if (!screenTrack) {
+                stream.getTracks().forEach(track => track.stop());
+                throw new Error('No screen video track was provided');
+            }
+            
+            this.screenStream = stream;
+            this.isScreenSharing = true;
+            screenTrack.onended = () => this.stopScreenShare();
+            
+            this.setScreenShareButton(true);
+            this.startPresentation(this.userId);
+            this.showLocalVideo();
+            this.sendScreenSharing(true);
+            this.sendMediaState();
+            
+            document.getElementById('localStatus').textContent = 'Sharing screen';
+            document.getElementById('videoStatus').textContent = 'On';
+            this.updateParticipantList();
+            
+            // Replace the camera feed everywhere; audio-only peers get a fresh video slot
+            this.peerConnections.forEach((peerConnection, peerId) => {
+                const videoSender = peerConnection.getSenders()
+                    .find(sender => sender.track && sender.track.kind === 'video');
                 
-                if (this.signaling) {
-                    this.signaling.send(JSON.stringify({
-                        type: 'screen-sharing',
-                        active: true
-                    }));
+                if (videoSender) {
+                    videoSender.replaceTrack(screenTrack).catch(error => {
+                        console.warn(`Could not publish screen to ${peerId}:`, error.message);
+                    });
+                    return;
                 }
                 
-                this.peerConnections.forEach((peerConnection, peerId) => {
-                    const senders = peerConnection.getSenders();
-                    const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
-                    if (videoSender && this.screenStream) {
-                        const screenTrack = this.screenStream.getVideoTracks()[0];
-                        if (screenTrack) {
-                            videoSender.replaceTrack(screenTrack);
-                        }
-                    }
-                });
+                const sender = peerConnection.addTrack(screenTrack, stream);
+                sender.__sourceKind = 'screen';
                 
-                this.isScreenSharing = true;
-                this.setScreenShareButton(true);
-                this.updateParticipantList();
-                
-                this.screenStream.getVideoTracks()[0].onended = () => {
-                    this.stopScreenShare();
-                };
-                
-                this.showMessage('✅ Screen sharing started', 'success');
-                
-            } else {
-                this.stopScreenShare();
-            }
+                if (peerConnection.signalingState === 'stable') {
+                    this.createOfferForPeer(peerId);
+                } else {
+                    peerConnection._needsRenegotiation = true;
+                }
+            });
+            
+            this.showMessage('✅ Screen sharing started', 'success');
             
         } catch (error) {
             console.error('❌ Error toggling screen share:', error);
+            this.screenStream = null;
+            this.isScreenSharing = false;
+            this.setScreenShareButton(false);
             if (error.name !== 'NotAllowedError') {
                 this.showMessage('❌ Failed to share screen: ' + error.message, 'error');
             }
@@ -2133,30 +2481,42 @@ class ProctoringApp {
             this.screenStream = null;
         }
         
-        if (this.localStream) {
-            this.peerConnections.forEach((peerConnection, peerId) => {
-                const senders = peerConnection.getSenders();
-                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
-                if (videoSender && this.localStream) {
-                    const cameraTrack = this.localStream.getVideoTracks()[0];
-                    if (cameraTrack) {
-                        videoSender.replaceTrack(cameraTrack);
-                    }
-                }
-            });
-        }
-        
         this.isScreenSharing = false;
         this.setScreenShareButton(false);
+        this.stopPresentation(this.userId);
+        this.sendScreenSharing(false);
         
-        if (this.signaling) {
-            this.signaling.send(JSON.stringify({
-                type: 'screen-sharing',
-                active: false
-            }));
-        }
+        const cameraTrack = this.localStream && this.localStream.getVideoTracks().length > 0
+            ? this.localStream.getVideoTracks()[0]
+            : null;
         
+        this.peerConnections.forEach((peerConnection, peerId) => {
+            const videoSender = peerConnection.getSenders()
+                .find(sender => sender.__sourceKind === 'screen')
+                || peerConnection.getSenders()
+                    .find(sender => sender.track && sender.track.kind === 'video')
+                || peerConnection.getSenders()
+                    .find(sender => sender.__sourceKind === 'video');
+            
+            if (!videoSender) return;
+            
+            videoSender.replaceTrack(cameraTrack).catch(error => {
+                console.warn(`Could not restore video for ${peerId}:`, error.message);
+            });
+            
+            // Keep the now empty slot so a later camera start can reuse it
+            if (!cameraTrack) videoSender.__sourceKind = 'video';
+            else delete videoSender.__sourceKind;
+        });
+        
+        this.showLocalVideo();
+        document.getElementById('localStatus').textContent = cameraTrack ? 'Camera on' : 'Audio only';
+        document.getElementById('videoStatus').textContent = cameraTrack
+            ? (this.isVideoHidden ? 'Off' : 'On')
+            : 'Off';
         this.updateParticipantList();
+        this.updateLocalVideoPlaceholder();
+        this.sendMediaState();
         this.showMessage('🖥️ Screen sharing stopped', 'info');
     }
     
@@ -2176,6 +2536,7 @@ class ProctoringApp {
             }
             
             document.getElementById('audioStatus').textContent = this.isAudioMuted ? 'Off' : 'On';
+            this.sendMediaState();
             this.showMessage(this.isAudioMuted ? '🔇 Microphone muted' : '🎤 Microphone unmuted', 'info');
         }
     }
@@ -2196,6 +2557,8 @@ class ProctoringApp {
             }
             
             document.getElementById('videoStatus').textContent = this.isVideoHidden ? 'Off' : 'On';
+            this.updateLocalVideoPlaceholder();
+            this.sendMediaState();
             this.showMessage(this.isVideoHidden ? '📷 Camera off' : '📷 Camera on', 'info');
         }
     }
@@ -2456,6 +2819,10 @@ class ProctoringApp {
         this.isVideoHidden = false;
         this.isScreenSharing = false;
         this.setScreenShareButton(false);
+        this.screenSharers.clear();
+        this.activePresenterId = null;
+        this.updatePresentationView();
+        this.updateLocalVideoPlaceholder();
         this.hideAudioUnlockPrompt();
         
         // Return the sidebar to its pre-session state
@@ -2490,12 +2857,11 @@ class ProctoringApp {
         const videoStatus = document.getElementById('videoStatus');
         if (videoStatus) videoStatus.textContent = 'On';
         
-        // Clear proctor session if ending
+        // Ending the session closes the room for this browser
         if (this.userType === 'proctor') {
-            localStorage.removeItem('proctorRoom');
-            localStorage.removeItem('proctorUserId');
-            localStorage.removeItem('proctorName');
+            this.clearSavedProctorSession();
         }
+        this.updateJoinButtonVisibility();
     }
     
     debugWebRTC() {

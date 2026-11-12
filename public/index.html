@@ -29,8 +29,8 @@
                 <h2><i class="fas fa-plug"></i> Connection</h2>
                 
                 <div class="form-group">
-                    <label for="userName"><i class="fas fa-user"></i> Your Name:</label>
-                    <input type="text" id="userName" placeholder="Enter your name" value="">
+                    <label for="userName"><i class="fas fa-user"></i> Your Name: <span class="required-star">*</span></label>
+                    <input type="text" id="userName" placeholder="Enter your name" value="" required>
                 </div>
                 
                 <div class="form-group" id="sessionDescriptionGroup">
@@ -43,7 +43,7 @@
                     <button id="createRoomBtn" class="btn btn-primary">
                         <i class="fas fa-plus-circle"></i> Create New Session
                     </button>
-                    <button id="joinRoomBtn" class="btn btn-secondary">
+                    <button id="joinRoomBtn" class="btn btn-secondary hidden">
                         <i class="fas fa-sign-in-alt"></i> Join Session
                     </button>
                 </div>
@@ -160,27 +160,43 @@
             <div class="panel video-panel">
                 <h2><i class="fas fa-video"></i> Video Streams</h2>
                 
-                <!-- Local Video - ALWAYS VISIBLE -->
-                <div class="video-container" id="localVideoContainer">
-                    <div class="video-header">
-                        <h3><i class="fas fa-user"></i> <span id="localName">You</span> (<span id="localRole">-</span>)</h3>
-                        <div class="video-stats">
-                            <span><i class="fas fa-microphone"></i> <span id="audioStatus">On</span></span>
-                            <span><i class="fas fa-video"></i> <span id="videoStatus">On</span></span>
+                <div class="video-content" id="videoContent">
+                    <!-- Shared screen takes over this stage -->
+                    <div id="presentationStage" class="presentation-stage hidden">
+                        <div class="presentation-bar">
+                            <span><i class="fas fa-desktop"></i> <span id="presentationLabel">Screen sharing</span></span>
+                        </div>
+                        <video id="presentationVideo" autoplay playsinline muted></video>
+                    </div>
+                    
+                    <div class="participant-rail" id="participantRail">
+                        <!-- Local Video - ALWAYS VISIBLE -->
+                        <div class="video-container" id="localVideoContainer">
+                            <div class="video-header">
+                                <h3><i class="fas fa-user"></i> <span id="localName">You</span> (<span id="localRole">-</span>)</h3>
+                                <div class="video-stats">
+                                    <span><i class="fas fa-microphone"></i> <span id="audioStatus">On</span></span>
+                                    <span><i class="fas fa-video"></i> <span id="videoStatus">On</span></span>
+                                </div>
+                            </div>
+                            <video id="localVideo" autoplay playsinline muted></video>
+                            <div class="video-placeholder" id="localVideoPlaceholder">
+                                <i class="fas fa-user"></i>
+                                <span id="localPlaceholderText">Camera off</span>
+                            </div>
+                            <div class="video-status">
+                                <i class="fas fa-signal"></i> <span id="localStatus">Camera off</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Remote Videos Container -->
+                        <div id="remoteVideosTitle" class="hidden">
+                            <h3><i class="fas fa-users"></i> Other Participants</h3>
+                        </div>
+                        <div id="remoteVideosContainer" class="video-grid-container">
+                            <!-- Remote videos will be added here dynamically -->
                         </div>
                     </div>
-                    <video id="localVideo" autoplay playsinline muted></video>
-                    <div class="video-status">
-                        <i class="fas fa-signal"></i> <span id="localStatus">Camera off</span>
-                    </div>
-                </div>
-                
-                <!-- Remote Videos Container -->
-                <div id="remoteVideosTitle" class="hidden">
-                    <h3><i class="fas fa-users"></i> Other Participants</h3>
-                </div>
-                <div id="remoteVideosContainer" class="video-grid-container">
-                    <!-- Remote videos will be added here dynamically -->
                 </div>
                 
                 <!-- Chat (For Everyone) -->
@@ -211,8 +227,8 @@
                     <input type="text" id="joinRoomId" placeholder="Enter session ID" value="">
                 </div>
                 <div class="form-group">
-                    <label for="joinUserName">Your Name:</label>
-                    <input type="text" id="joinUserName" placeholder="Enter your name" value="">
+                    <label for="joinUserName">Your Name: <span class="required-star">*</span></label>
+                    <input type="text" id="joinUserName" placeholder="Enter your name" value="" required>
                 </div>
                 <p class="form-hint">
                     <i class="fas fa-circle-info"></i>

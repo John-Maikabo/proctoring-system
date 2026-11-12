@@ -162,8 +162,15 @@ app.get('/api/test-turn', async (req, res) => {
 app.get('/api/create-room', (req, res) => {
     const roomId = generateRoomId();
     const userId = req.query.userId || generateUserId();
-    const userName = req.query.name || 'Proctor';
+    const userName = (req.query.name || '').toString().trim().slice(0, 60);
     const description = (req.query.description || '').toString().trim().slice(0, 300);
+    
+    if (!userName) {
+        return res.status(400).json({
+            success: false,
+            error: 'Your name is required'
+        });
+    }
     
     if (!description) {
         return res.status(400).json({
@@ -305,7 +312,8 @@ wss.on('connection', (ws, req) => {
         userType: userType,
         userName: userName,
         joinedAt: Date.now(),
-        isScreenSharing: false
+        isScreenSharing: false,
+        mediaState: { audio: true, video: true, camera: true }
     };
     
     connections.set(connectionKey(roomId, userId), connection);
@@ -326,7 +334,8 @@ wss.on('connection', (ws, req) => {
         type: conn.userType,
         name: conn.userName,
         joinedAt: conn.joinedAt,
-        isScreenSharing: conn.isScreenSharing
+        isScreenSharing: conn.isScreenSharing,
+        mediaState: conn.mediaState
     }));
     
     const welcomeMessage = {
@@ -535,6 +544,24 @@ function handleMessage(roomId, senderId, data) {
             });
             
             console.log(`${sender.userName} screen sharing: ${data.active ? 'started' : 'stopped'}`);
+            break;
+            
+        case 'media-state':
+            sender.mediaState = {
+                audio: data.audio !== false,
+                video: data.video !== false,
+                camera: data.camera !== false
+            };
+            
+            broadcastToRoom(roomId, senderId, {
+                type: 'media-state',
+                userId: senderId,
+                userName: sender.userName,
+                audio: sender.mediaState.audio,
+                video: sender.mediaState.video,
+                camera: sender.mediaState.camera,
+                timestamp: Date.now()
+            });
             break;
             
         case 'chat':

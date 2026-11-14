@@ -214,7 +214,8 @@ app.get('/api/room/:roomId', (req, res) => {
         id: p.userId,
         type: p.userType,
         name: p.userName,
-        isScreenSharing: p.isScreenSharing || false
+        isScreenSharing: p.isScreenSharing || false,
+        handRaised: !!p.handRaised
     }));
     
     res.json({
@@ -313,6 +314,7 @@ wss.on('connection', (ws, req) => {
         userName: userName,
         joinedAt: Date.now(),
         isScreenSharing: false,
+        handRaised: false,
         mediaState: { audio: true, video: true, camera: true }
     };
     
@@ -335,6 +337,7 @@ wss.on('connection', (ws, req) => {
         name: conn.userName,
         joinedAt: conn.joinedAt,
         isScreenSharing: conn.isScreenSharing,
+        handRaised: !!conn.handRaised,
         mediaState: conn.mediaState
     }));
     
@@ -361,6 +364,7 @@ wss.on('connection', (ws, req) => {
         userId: userId,
         userType: userType,
         userName: userName,
+        handRaised: false,
         participants: participantList,
         participantCount: room.participants.size,
         timestamp: Date.now()
@@ -563,6 +567,38 @@ function handleMessage(roomId, senderId, data) {
                 timestamp: Date.now()
             });
             break;
+            
+        case 'hand-raise':
+            sender.handRaised = data.raised === true;
+            
+            broadcastToRoom(roomId, senderId, {
+                type: 'hand-raise',
+                userId: senderId,
+                userName: sender.userName,
+                userType: sender.userType,
+                raised: sender.handRaised,
+                timestamp: Date.now()
+            });
+            
+            console.log(`${sender.userName} ${sender.handRaised ? 'raised' : 'lowered'} their hand`);
+            break;
+            
+        case 'reaction': {
+            const emoji = (data.emoji || '').toString().trim().slice(0, 8);
+            if (!emoji) break;
+            
+            broadcastToRoom(roomId, senderId, {
+                type: 'reaction',
+                userId: senderId,
+                userName: sender.userName,
+                userType: sender.userType,
+                emoji: emoji,
+                timestamp: Date.now()
+            });
+            
+            console.log(`${sender.userName} reacted ${emoji}`);
+            break;
+        }
             
         case 'chat':
             // Broadcast chat message to all in room

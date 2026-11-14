@@ -14,6 +14,8 @@ class ProctoringApp {
         this.isAudioMuted = false;
         this.isVideoHidden = false;
         this.isScreenSharing = false;
+        this.isHandRaised = false;
+        this._uiAudioCtx = null;
         this.participants = new Map();
         this.mediaRecorder = null;
         this.recordedChunks = [];
@@ -82,7 +84,7 @@ class ProctoringApp {
             console.log('🔍 Found saved proctor session for room:', savedRoom);
             this.roomId = savedRoom;
             this.userType = 'proctor';
-            this.userName = localStorage.getItem('proctorName') || 'Proctor';
+            this.userName = localStorage.getItem('proctorName') || 'Lecturer';
             
             // Update URL to show proctor type
             const url = new URL(window.location);
@@ -129,7 +131,7 @@ class ProctoringApp {
                 const nameInput = document.getElementById('userName');
                 if (nameInput) {
                     const savedName = localStorage.getItem('proctorName');
-                    this.userName = savedName || (this.userType === 'proctor' ? 'Proctor' : 'Candidate');
+                    this.userName = savedName || (this.userType === 'proctor' ? 'Lecturer' : 'Student');
                     nameInput.value = this.userName;
                 }
                 
@@ -148,6 +150,7 @@ class ProctoringApp {
                 this.showCandidateRejoinPanel();
             });
             this.updateJoinButtonVisibility();
+            this.updateCreateButtonVisibility();
             this.updateLocalVideoPlaceholder();
         }, 100);
     }
@@ -241,7 +244,7 @@ class ProctoringApp {
         if (!room || userId !== this.userId) return null;
         return {
             room: room,
-            name: localStorage.getItem('candidateName') || 'Candidate',
+            name: localStorage.getItem('candidateName') || 'Student',
             media: localStorage.getItem('candidateMedia') || 'camera'
         };
     }
@@ -259,6 +262,20 @@ class ProctoringApp {
         localStorage.removeItem('candidateName');
         localStorage.removeItem('candidateMedia');
         this.updateJoinButtonVisibility();
+    }
+    
+    isStudentMode() {
+        const params = new URLSearchParams(window.location.search);
+        return this.userType === 'candidate'
+            || params.get('type') === 'candidate'
+            || !!this.getSavedCandidateSession();
+    }
+    
+    updateCreateButtonVisibility() {
+        const createBtn = document.getElementById('createRoomBtn');
+        if (!createBtn) return;
+        // Only lecturers can start a new class; students never see the option
+        createBtn.style.display = this.isStudentMode() ? 'none' : '';
     }
     
     updateJoinButtonVisibility() {
@@ -333,15 +350,15 @@ class ProctoringApp {
             `;
             
             panel.innerHTML = `
-                <h3><i class="fas fa-user-shield"></i> Proctor Session Detected</h3>
-                <p>You have an existing proctor session for room: <strong>${savedRoom}</strong></p>
+                <h3><i class="fas fa-user-shield"></i> Lecturer Session Detected</h3>
+                <p>You have an existing lecturer session for room: <strong>${savedRoom}</strong></p>
                 ${description ? `<p class="rejoin-description"><i class="fas fa-align-left"></i> ${this.escapeHtml(description)}</p>` : ''}
                 <div style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
                     <button id="rejoinAsProctorBtn" class="btn btn-primary">
-                        <i class="fas fa-user-shield"></i> Rejoin as Proctor
+                        <i class="fas fa-user-shield"></i> Rejoin as Lecturer
                     </button>
                     <button id="joinAsCandidateBtn" class="btn btn-secondary">
-                        <i class="fas fa-user"></i> Join as Candidate
+                        <i class="fas fa-user"></i> Join as Student
                     </button>
                     <button id="dismissRejoinBtn" class="btn btn-warning">
                         <i class="fas fa-times"></i> Dismiss
@@ -354,7 +371,7 @@ class ProctoringApp {
             document.getElementById('rejoinAsProctorBtn').addEventListener('click', () => {
                 this.roomId = savedRoom;
                 this.userType = 'proctor';
-                this.userName = localStorage.getItem('proctorName') || 'Proctor';
+                this.userName = localStorage.getItem('proctorName') || 'Lecturer';
                 this.updateJoinButtonVisibility();
                 this.joinExistingRoom();
                 panel.remove();
@@ -362,7 +379,9 @@ class ProctoringApp {
             
             document.getElementById('joinAsCandidateBtn').addEventListener('click', () => {
                 this.clearSavedProctorSession();
+                this.userType = 'candidate';
                 this.updateJoinButtonVisibility();
+                this.updateCreateButtonVisibility();
                 panel.remove();
             });
             
@@ -493,6 +512,10 @@ class ProctoringApp {
         document.getElementById('toggleAudioBtn')?.addEventListener('click', () => this.toggleAudio());
         document.getElementById('toggleVideoBtn')?.addEventListener('click', () => this.toggleVideo());
         document.getElementById('screenShareBtn')?.addEventListener('click', () => this.toggleScreenShare());
+        document.getElementById('raiseHandBtn')?.addEventListener('click', () => this.toggleHand());
+        document.querySelectorAll('.reaction-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.sendReaction(btn.dataset.emoji));
+        });
         document.getElementById('snapshotBtn')?.addEventListener('click', () => this.takeSnapshot());
         document.getElementById('recordBtn')?.addEventListener('click', () => this.toggleRecording());
         document.getElementById('sendChatBtn')?.addEventListener('click', () => this.sendChat());
@@ -506,6 +529,8 @@ class ProctoringApp {
         }
         
         console.log('✅ All events bound');
+        
+        this.updateCreateButtonVisibility();
 
         window.addEventListener('resize', () => {
             clearTimeout(this._resizeTimer);
@@ -539,6 +564,12 @@ class ProctoringApp {
     
     async createRoom() {
         try {
+            if (this.isStudentMode()) {
+                this.updateCreateButtonVisibility();
+                this.showMessage('❌ Only the lecturer can create a class session', 'error');
+                return;
+            }
+            
             this.updateStatus('Creating session...', 'connecting');
             this.showMessage('Creating session...');
             
@@ -603,10 +634,10 @@ class ProctoringApp {
     
     updateRoomUI() {
         document.getElementById('roomIdDisplay').textContent = this.roomId;
-        document.getElementById('userRole').textContent = this.userType === 'proctor' ? 'Proctor' : 'Candidate';
+        document.getElementById('userRole').textContent = this.userType === 'proctor' ? 'Lecturer' : 'Student';
         document.getElementById('displayUserName').textContent = this.userName;
         document.getElementById('localName').textContent = this.userName;
-        document.getElementById('localRole').textContent = this.userType === 'proctor' ? 'Proctor' : 'Candidate';
+        document.getElementById('localRole').textContent = this.userType === 'proctor' ? 'Lecturer' : 'Student';
         
         const shareLink = `${window.location.protocol}//${window.location.host}/?room=${this.roomId}&type=candidate`;
         document.getElementById('shareLink').value = shareLink;
@@ -618,6 +649,7 @@ class ProctoringApp {
         mediaControls.open = true;
         document.getElementById('chatPanel').classList.remove('hidden');
         document.getElementById('participantListContainer').classList.remove('hidden');
+        document.getElementById('classroomControls')?.classList.remove('hidden');
         document.getElementById('proctoringControls').classList.remove('hidden');
         document.getElementById('sessionDescriptionGroup')?.classList.add('hidden');
         
@@ -642,6 +674,7 @@ class ProctoringApp {
         document.getElementById('screenShareBtn').disabled = true;
         document.getElementById('snapshotBtn').disabled = true;
         document.getElementById('recordBtn').disabled = true;
+        this.setClassroomControlsEnabled(false);
     }
     
     updateSessionDescription() {
@@ -668,7 +701,7 @@ class ProctoringApp {
         if (joinUserNameInput && !joinUserNameInput.value) {
             const savedCandidate = this.getSavedCandidateSession();
             const matchesSaved = savedCandidate && joinRoomIdInput && savedCandidate.room === joinRoomIdInput.value.trim().toUpperCase();
-            joinUserNameInput.value = matchesSaved ? savedCandidate.name : (this.userName || 'Candidate');
+            joinUserNameInput.value = matchesSaved ? savedCandidate.name : (this.userName || 'Student');
         }
     }
     
@@ -934,6 +967,7 @@ class ProctoringApp {
                                 name: participant.name,
                                 type: participant.type,
                                 isScreenSharing: !!participant.isScreenSharing,
+                                handRaised: !!participant.handRaised,
                                 mediaState: participant.mediaState || null
                             });
                             
@@ -951,6 +985,7 @@ class ProctoringApp {
                 this.roomDescription = data.description || this.roomDescription || '';
                 this.updateSessionDescription();
                 this.updateParticipantList();
+                this.updateHandIndicators();
                 this.updatePresentationView();
                 this.showMessage(`✅ Connected as ${this.userName}`, 'success');
                 
@@ -973,10 +1008,12 @@ class ProctoringApp {
                     id: data.userId,
                     type: data.userType,
                     name: data.userName,
-                    isScreenSharing: false
+                    isScreenSharing: false,
+                    handRaised: !!data.handRaised
                 });
                 
                 this.updateParticipantList();
+                this.updateHandIndicators();
                 this.updatePresentationView();
                 this.sendMediaState();
                 this.showMessage(`👤 ${data.userName} joined`, 'success');
@@ -1009,7 +1046,8 @@ class ProctoringApp {
                             id: data.peerId,
                             name: data.peerName,
                             type: data.peerType,
-                            isScreenSharing: false
+                            isScreenSharing: false,
+                            handRaised: false
                         });
                         this.updateParticipantList();
                     }
@@ -1072,6 +1110,29 @@ class ProctoringApp {
                 break;
             }
                 
+            case 'hand-raise': {
+                const handParticipant = this.participants.get(data.userId);
+                if (handParticipant) {
+                    handParticipant.handRaised = !!data.raised;
+                    this.updateParticipantList();
+                    this.updateHandIndicators();
+                }
+                
+                if (data.raised) {
+                    this.playHandRaiseSound();
+                    this.showMessage(`✋ ${data.userName} raised their hand`, 'info');
+                } else {
+                    this.showMessage(`✋ ${data.userName} lowered their hand`, 'info');
+                }
+                break;
+            }
+                
+            case 'reaction': {
+                this.showReaction(data.userId, data.emoji);
+                this.showMessage(`${data.userName} reacted ${data.emoji}`, 'info');
+                break;
+            }
+                
             case 'chat':
                 this.displayChatMessage(data.senderName, data.message, data.senderId !== this.userId);
                 break;
@@ -1092,7 +1153,7 @@ class ProctoringApp {
                 break;
                 
             case 'proctor-left':
-                this.showMessage('❌ Proctor left the session', 'error');
+                this.showMessage('❌ Lecturer left the session', 'error');
                 this.endCall();
                 break;
                 
@@ -1111,17 +1172,21 @@ class ProctoringApp {
         
         const participantList = document.getElementById('participantList');
         if (participantList) {
+            const selfRole = this.userType === 'proctor' ? 'Lecturer' : 'Student';
             let html = `<div class="participant self">
                 <i class="fas fa-user${this.userType === 'proctor' ? '-shield' : ''}"></i>
-                <span>${this.userName} (You) - ${this.userType}</span>
+                <span>${this.escapeHtml(this.userName)} (You) - ${selfRole}</span>
                 ${this.isScreenSharing ? '<span class="screen-sharing-badge"><i class="fas fa-desktop"></i> Sharing</span>' : ''}
+                ${this.isHandRaised ? '<span class="participant-hand"><i class="fas fa-hand-paper"></i> Hand raised</span>' : ''}
             </div>`;
             
             this.participants.forEach(participant => {
+                const role = participant.type === 'proctor' ? 'Lecturer' : 'Student';
                 html += `<div class="participant">
                     <i class="fas fa-user${participant.type === 'proctor' ? '-shield' : ''}"></i>
-                    <span>${participant.name} - ${participant.type}</span>
+                    <span>${this.escapeHtml(participant.name)} - ${role}</span>
                     ${participant.isScreenSharing ? '<span class="screen-sharing-badge"><i class="fas fa-desktop"></i> Sharing</span>' : ''}
+                    ${participant.handRaised ? '<span class="participant-hand"><i class="fas fa-hand-paper"></i> Hand raised</span>' : ''}
                 </div>`;
             });
             
@@ -1292,6 +1357,7 @@ class ProctoringApp {
             document.getElementById('toggleVideoBtn').disabled = false;
             document.getElementById('screenShareBtn').disabled = false;
             document.getElementById('recordBtn').disabled = false;
+            this.setClassroomControlsEnabled(true);
             
             if (this.userType === 'proctor') {
                 document.getElementById('snapshotBtn').disabled = false;
@@ -1332,6 +1398,7 @@ class ProctoringApp {
             document.getElementById('toggleVideoBtn').disabled = true;
             document.getElementById('screenShareBtn').disabled = false;
             document.getElementById('recordBtn').disabled = false;
+            this.setClassroomControlsEnabled(true);
             
             if (this.userType === 'proctor') {
                 document.getElementById('snapshotBtn').disabled = false;
@@ -2250,7 +2317,7 @@ class ProctoringApp {
             const header = document.createElement('div');
             header.className = 'video-header';
             header.innerHTML = `
-                <h3><i class="fas fa-user${peerType === 'proctor' ? '-shield' : ''}"></i> <span class="peer-name">${peerName}</span></h3>
+                <h3><i class="fas fa-user${peerType === 'proctor' ? '-shield' : ''}"></i> <span class="peer-name">${this.escapeHtml(peerName)}</span></h3>
                 <div class="video-stats">
                     <span><i class="fas fa-microphone"></i> <span id="audioStatus-${peerId}">On</span></span>
                     <span><i class="fas fa-video"></i> <span id="videoStatus-${peerId}">On</span></span>
@@ -2290,12 +2357,30 @@ class ProctoringApp {
             statusBar.className = 'video-status';
             statusBar.innerHTML = `<i class="fas fa-signal"></i> <span id="remoteStatus-${peerId}">Connected</span>`;
             
+            // Hand-raise badge
+            const handBadge = document.createElement('div');
+            handBadge.className = 'hand-badge hidden';
+            handBadge.id = `handBadge-${peerId}`;
+            handBadge.innerHTML = '<i class="fas fa-hand-paper"></i> Hand raised';
+            
+            // Floating reactions layer
+            const reactionLayer = document.createElement('div');
+            reactionLayer.className = 'reaction-layer';
+            reactionLayer.id = `reactionLayer-${peerId}`;
+            
             // Assemble container
             videoContainer.appendChild(header);
             videoContainer.appendChild(videoElement);
             videoContainer.appendChild(placeholder);
+            videoContainer.appendChild(handBadge);
+            videoContainer.appendChild(reactionLayer);
             videoContainer.appendChild(statusBar);
             remoteVideosContainer.appendChild(videoContainer);
+            
+            const existingParticipant = this.participants.get(peerId);
+            if (existingParticipant && existingParticipant.handRaised) {
+                handBadge.classList.remove('hidden');
+            }
 
             console.log(`✅ Video container created for ${peerName}`);
             this.layoutParticipantGrid();
@@ -2776,9 +2861,106 @@ class ProctoringApp {
         }
     }
     
+    setClassroomControlsEnabled(enabled) {
+        const raiseBtn = document.getElementById('raiseHandBtn');
+        if (raiseBtn) raiseBtn.disabled = !enabled;
+        document.querySelectorAll('.reaction-btn').forEach(btn => {
+            btn.disabled = !enabled;
+        });
+    }
+    
+    toggleHand() {
+        if (!this.roomId) return;
+        
+        this.isHandRaised = !this.isHandRaised;
+        this.updateLocalHandIndicator();
+        this.updateParticipantList();
+        
+        if (this.signaling && this.signaling.readyState === 1) {
+            this.signaling.send(JSON.stringify({
+                type: 'hand-raise',
+                raised: this.isHandRaised
+            }));
+        }
+        
+        this.showMessage(this.isHandRaised ? '✋ Hand raised' : '✋ Hand lowered', 'info');
+    }
+    
+    updateLocalHandIndicator() {
+        const badge = document.getElementById('localHandBadge');
+        if (badge) badge.classList.toggle('hidden', !this.isHandRaised);
+        
+        const raiseBtn = document.getElementById('raiseHandBtn');
+        if (raiseBtn) {
+            raiseBtn.classList.toggle('raised', this.isHandRaised);
+            raiseBtn.innerHTML = this.isHandRaised
+                ? '<i class="fas fa-hand-paper"></i> Lower Hand'
+                : '<i class="fas fa-hand-paper"></i> Raise Hand';
+        }
+    }
+    
+    updateHandIndicators() {
+        this.updateLocalHandIndicator();
+        this.participants.forEach((participant, peerId) => {
+            const badge = document.getElementById(`handBadge-${peerId}`);
+            if (badge) badge.classList.toggle('hidden', !participant.handRaised);
+        });
+    }
+    
+    sendReaction(emoji) {
+        if (!this.roomId || !emoji) return;
+        
+        this.showReaction('local', emoji);
+        
+        if (this.signaling && this.signaling.readyState === 1) {
+            this.signaling.send(JSON.stringify({ type: 'reaction', emoji: emoji }));
+        }
+    }
+    
+    showReaction(targetId, emoji) {
+        const layerId = targetId === 'local' ? 'reactionLayer-local' : `reactionLayer-${targetId}`;
+        const layer = document.getElementById(layerId);
+        if (!layer) return;
+        
+        const floating = document.createElement('span');
+        floating.className = 'reaction-float';
+        floating.textContent = emoji;
+        floating.style.left = `${10 + Math.floor(Math.random() * 60)}%`;
+        layer.appendChild(floating);
+        setTimeout(() => floating.remove(), 2300);
+    }
+    
+    playHandRaiseSound() {
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtx) return;
+            
+            if (!this._uiAudioCtx) this._uiAudioCtx = new AudioCtx();
+            const ctx = this._uiAudioCtx;
+            if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+            
+            const now = ctx.currentTime;
+            [880, 1174.66].forEach((frequency, index) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = frequency;
+                const start = now + index * 0.14;
+                gain.gain.setValueAtTime(0.0001, start);
+                gain.gain.exponentialRampToValueAtTime(0.08, start + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
+                osc.connect(gain).connect(ctx.destination);
+                osc.start(start);
+                osc.stop(start + 0.14);
+            });
+        } catch (error) {
+            console.warn('Could not play hand-raise sound:', error.message);
+        }
+    }
+    
     takeSnapshot() {
         if (this.userType !== 'proctor') {
-            this.showMessage('❌ Only proctors can take snapshots', 'error');
+            this.showMessage('❌ Only lecturers can take snapshots', 'error');
             return;
         }
         
@@ -3337,6 +3519,7 @@ class ProctoringApp {
         document.getElementById('screenShareBtn').disabled = true;
         document.getElementById('snapshotBtn').disabled = true;
         document.getElementById('recordBtn').disabled = true;
+        this.setClassroomControlsEnabled(false);
         
         const localVideo = document.getElementById('localVideo');
         if (localVideo) {
@@ -3358,6 +3541,8 @@ class ProctoringApp {
         this.isAudioMuted = false;
         this.isVideoHidden = false;
         this.isScreenSharing = false;
+        this.isHandRaised = false;
+        this.updateLocalHandIndicator();
         this.setScreenShareButton(false);
         this.screenSharers.clear();
         this.activePresenterId = null;
@@ -3369,6 +3554,7 @@ class ProctoringApp {
         document.getElementById('roomInfo')?.classList.add('hidden');
         document.getElementById('mediaControls')?.classList.add('hidden');
         document.getElementById('participantListContainer')?.classList.add('hidden');
+        document.getElementById('classroomControls')?.classList.add('hidden');
         document.getElementById('proctoringControls')?.classList.add('hidden');
         document.getElementById('chatPanel')?.classList.add('hidden');
         document.getElementById('sessionDescriptionGroup')?.classList.remove('hidden');
@@ -3378,8 +3564,8 @@ class ProctoringApp {
         const descriptionInput = document.getElementById('sessionDescription');
         if (descriptionInput) descriptionInput.value = '';
         
-        const createBtn = document.getElementById('createRoomBtn');
-        if (createBtn) createBtn.style.display = '';
+        // Students never regain the create-session option; lecturers do
+        this.updateCreateButtonVisibility();
         
         const audioBtn = document.getElementById('toggleAudioBtn');
         if (audioBtn) audioBtn.innerHTML = '<i class="fas fa-microphone"></i> Mute Audio';

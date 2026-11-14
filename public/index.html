@@ -16,7 +16,7 @@
 <body>
     <div class="container">
         <header>
-            <h1><i class="fas fa-shield-alt"></i> Zed Stream</h1>
+            <h1><i class="fas fa-graduation-cap"></i> Zed Stream Classroom</h1>
             <div class="status">
                 <span class="status-indicator" id="statusIndicator"></span>
                 <span id="statusText">Disconnected</span>
@@ -35,8 +35,8 @@
                 
                 <div class="form-group" id="sessionDescriptionGroup">
                     <label for="sessionDescription"><i class="fas fa-align-left"></i> Session Description: <span class="required-star">*</span></label>
-                    <textarea id="sessionDescription" rows="3" maxlength="300" required placeholder="What is this session about? Participants will see this."></textarea>
-                    <p class="form-hint">Required — participants see this before joining.</p>
+                    <textarea id="sessionDescription" rows="3" maxlength="300" required placeholder="What is this class about? Students will see this."></textarea>
+                    <p class="form-hint">Required — students see this before joining.</p>
                 </div>
                 
                 <div class="button-group">
@@ -137,6 +137,26 @@
                     </div>
                 </details>
                 
+                <!-- Classroom interaction -->
+                <details class="collapsible hidden" id="classroomControls" open>
+                    <summary>
+                        <span class="summary-label"><i class="fas fa-hands"></i> Classroom</span>
+                        <i class="fas fa-chevron-down chevron"></i>
+                    </summary>
+                    <div class="collapsible-body">
+                        <div class="reaction-bar">
+                            <span class="reaction-label"><i class="fas fa-face-smile"></i> React:</span>
+                            <button class="btn btn-reaction reaction-btn" data-emoji="👍" title="Thumbs up" disabled>👍</button>
+                            <button class="btn btn-reaction reaction-btn" data-emoji="👏" title="Applause" disabled>👏</button>
+                            <button class="btn btn-reaction reaction-btn" data-emoji="❓" title="Question" disabled>❓</button>
+                            <button class="btn btn-reaction reaction-btn" data-emoji="😮" title="Surprised" disabled>😮</button>
+                        </div>
+                        <button id="raiseHandBtn" class="btn btn-hand" disabled>
+                            <i class="fas fa-hand-paper"></i> Raise Hand
+                        </button>
+                    </div>
+                </details>
+                
                 <!-- Session Tools -->
                 <details class="collapsible hidden" id="proctoringControls">
                     <summary>
@@ -187,6 +207,10 @@
                                 <i class="fas fa-user"></i>
                                 <span id="localPlaceholderText">Camera off</span>
                             </div>
+                            <div class="hand-badge hidden" id="localHandBadge">
+                                <i class="fas fa-hand-paper"></i> Hand raised
+                            </div>
+                            <div class="reaction-layer" id="reactionLayer-local"></div>
                             <div class="video-status">
                                 <i class="fas fa-signal"></i> <span id="localStatus">Camera off</span>
                             </div>
@@ -208,7 +232,7 @@
                     <div id="chatMessages" class="chat-messages">
                         <div class="chat-message system">
                             <div class="chat-sender">System <span class="chat-time" id="currentTime"></span></div>
-                            <div class="chat-text">Welcome to the proctoring session</div>
+                            <div class="chat-text">Welcome to the class</div>
                         </div>
                     </div>
                     <div class="chat-input">
@@ -224,7 +248,7 @@
         <!-- Join Modal -->
         <div id="joinModal" class="modal hidden">
             <div class="modal-content">
-                <h2><i class="fas fa-sign-in-alt"></i> Join Session</h2>
+                <h2><i class="fas fa-sign-in-alt"></i> Join Class</h2>
                 <div class="form-group">
                     <label for="joinRoomId">Session ID:</label>
                     <input type="text" id="joinRoomId" placeholder="Enter session ID" value="">
@@ -252,9 +276,9 @@
         </div>
         
         <footer>
-            <p><i class="fas fa-code"></i> Zed Stream | Multi-Candidate Support | Screen Sharing</p>
+            <p><i class="fas fa-code"></i> Zed Stream Classroom | Screen Sharing for Lectures</p>
             <p class="disclaimer">
-                <i class="fas fa-exclamation-triangle"></i> This session is being recorded for proctoring purposes.
+                <i class="fas fa-exclamation-triangle"></i> This class may be recorded for learning purposes.
             </p>
         </footer>
     </div>
@@ -284,9 +308,9 @@
             const userNameInput = document.getElementById('userName');
             if (userNameInput) {
                 if (userType === 'proctor') {
-                    userNameInput.value = 'Proctor';
+                    userNameInput.value = 'Lecturer';
                 } else if (userType === 'candidate') {
-                    userNameInput.value = 'Candidate';
+                    userNameInput.value = 'Student';
                 }
             }
             

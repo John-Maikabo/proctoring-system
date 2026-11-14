@@ -426,6 +426,116 @@ header h1 i {
     gap: 5px;
 }
 
+/* Classroom interaction */
+.reaction-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.reaction-label {
+    color: #a9b7c6;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.btn-reaction {
+    padding: 6px 12px;
+    font-size: 1.15rem;
+    line-height: 1;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+}
+
+.btn-reaction:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.btn-hand {
+    width: 100%;
+    background: #f4a261;
+    color: #1b1b1b;
+    font-weight: 700;
+}
+
+.btn-hand:hover:not(:disabled) {
+    background: #f6b179;
+}
+
+.btn-hand.raised {
+    background: #e63946;
+    color: #fff;
+}
+
+.hand-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 4;
+    background: rgba(244, 162, 97, 0.95);
+    color: #1b1b1b;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 4px 9px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.participant-hand {
+    margin-left: auto;
+    background: rgba(244, 162, 97, 0.9);
+    color: #1b1b1b;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.participant .screen-sharing-badge + .participant-hand,
+.participant .participant-hand + .screen-sharing-badge {
+    margin-left: 0;
+}
+
+.reaction-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.reaction-float {
+    position: absolute;
+    bottom: 14%;
+    font-size: 2rem;
+    animation: reactionFloat 2.2s ease-out forwards;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
+@keyframes reactionFloat {
+    0% {
+        transform: translateY(0) scale(0.6);
+        opacity: 0;
+    }
+    15% {
+        opacity: 1;
+        transform: translateY(-8px) scale(1.1);
+    }
+    100% {
+        transform: translateY(-130px) scale(1);
+        opacity: 0;
+    }
+}
+
 /* Video */
 .video-grid-container {
     display: grid;

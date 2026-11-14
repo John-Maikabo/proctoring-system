@@ -18,6 +18,15 @@ class ProctoringApp {
         this.mediaRecorder = null;
         this.recordedChunks = [];
         this.isRecording = false;
+        this._recordCanvas = null;
+        this._recordCtx = null;
+        this._recordRAF = null;
+        this._recordAudioCtx = null;
+        this._recordAudioDest = null;
+        this._recordAudioSources = [];
+        this._recordAudioConnected = new Set();
+        this._recordingVideos = new Map();
+        this._recordAudioTimer = null;
         this.snapshots = [];
         this.remoteStreams = new Map();
         this.twilioTurnServers = null;
@@ -2810,67 +2819,388 @@ class ProctoringApp {
     }
     
     async toggleRecording() {
-        if (!this.isRecording) {
+        if (this.isRecording) {
+            this.stopRecording();
+            return;
+        }
+        await this.startRecording();
+    }
+    
+    getRecordingSources() {
+        const sources = [{
+            id: 'local',
+            name: this.userName || 'You',
+            stream: this.localStream,
+            isLocal: true
+        }];
+        
+        this.remoteStreams.forEach((stream, peerId) => {
+            const participant = this.participants.get(peerId);
+            sources.push({
+                id: peerId,
+                name: participant ? participant.name : 'Participant',
+                stream: stream,
+                isLocal: false,
+                mediaState: participant ? participant.mediaState : null
+            });
+        });
+        
+        return sources;
+    }
+    
+    ensureRecordingVideo(id, stream) {
+        let entry = this._recordingVideos.get(id);
+        if (!entry) {
+            const video = document.createElement('video');
+            video.muted = true;
+            video.autoplay = true;
+            video.playsInline = true;
+            video.style.display = 'none';
+            document.body.appendChild(video);
+            entry = { video: video };
+            this._recordingVideos.set(id, entry);
+        }
+        
+        if (stream && entry.video.srcObject !== stream) {
+            entry.video.srcObject = stream;
+            entry.video.play().catch(() => {});
+        }
+        
+        return entry.video;
+    }
+    
+    drawRecordingTile(ctx, video, x, y, width, height, label, emptyText) {
+        ctx.save();
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, y, width, height, 10);
+        else ctx.rect(x, y, width, height);
+        ctx.clip();
+        
+        ctx.fillStyle = '#0d1524';
+        ctx.fillRect(x, y, width, height);
+        
+        const ready = video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
+        if (ready) {
+            const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
+            const drawWidth = video.videoWidth * scale;
+            const drawHeight = video.videoHeight * scale;
+            ctx.drawImage(video, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+        } else if (emptyText) {
+            ctx.fillStyle = '#8b9bb4';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = 'bold 20px sans-serif';
+            ctx.fillText(emptyText, x + width / 2, y + height / 2);
+        }
+        
+        const stripHeight = Math.min(34, Math.max(24, height * 0.14));
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        ctx.fillRect(x, y + height - stripHeight, width, stripHeight);
+        ctx.fillStyle = '#e6f1ff';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        const text = label.length > 34 ? label.slice(0, 33) + '…' : label;
+        ctx.fillText(text, x + 10, y + height - stripHeight / 2);
+        
+        ctx.restore();
+    }
+    
+    getRecordingEmptyText(source) {
+        if (source.isLocal) {
+            const hasVideo = !!(this.localStream && this.localStream.getVideoTracks().length > 0);
+            if (!hasVideo) return 'Audio only';
+            return this.isVideoHidden ? 'Camera off' : '';
+        }
+        
+        const media = source.mediaState || {};
+        const hasVideo = !!(source.stream && source.stream.getVideoTracks().some(track => track.readyState === 'live'));
+        if (!hasVideo) return media.camera === false ? 'Audio only' : 'Camera off';
+        return media.video === false ? 'Camera off' : '';
+    }
+    
+    drawRecordingFrame() {
+        const ctx = this._recordCtx;
+        const canvas = this._recordCanvas;
+        if (!ctx || !canvas) return;
+        
+        const width = canvas.width;
+        const height = canvas.height;
+        const gap = 12;
+        
+        ctx.fillStyle = '#05070d';
+        ctx.fillRect(0, 0, width, height);
+        
+        const sources = this.getRecordingSources();
+        const presenterId = this.activePresenterId;
+        const presenting = presenterId && this.screenSharers.has(presenterId);
+        
+        if (presenting) {
+            const railWidth = Math.max(220, Math.round(width * 0.2));
+            const stageWidth = width - railWidth - gap * 3;
+            const stageHeight = height - gap * 2;
+            const stageX = gap;
+            const stageY = gap;
+            
+            const stageStream = this.getPresentationStream(presenterId);
+            const stageVideo = stageStream ? this.ensureRecordingVideo('presenter', stageStream) : null;
+            
+            ctx.save();
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(stageX, stageY, stageWidth, stageHeight, 10);
+            else ctx.rect(stageX, stageY, stageWidth, stageHeight);
+            ctx.clip();
+            ctx.fillStyle = '#000';
+            ctx.fillRect(stageX, stageY, stageWidth, stageHeight);
+            
+            if (stageVideo && stageVideo.readyState >= 2 && stageVideo.videoWidth > 0) {
+                const scale = Math.min(stageWidth / stageVideo.videoWidth, stageHeight / stageVideo.videoHeight);
+                const drawWidth = stageVideo.videoWidth * scale;
+                const drawHeight = stageVideo.videoHeight * scale;
+                ctx.drawImage(stageVideo, stageX + (stageWidth - drawWidth) / 2, stageY + (stageHeight - drawHeight) / 2, drawWidth, drawHeight);
+            } else {
+                ctx.fillStyle = '#8b9bb4';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = 'bold 22px sans-serif';
+                ctx.fillText('Waiting for shared screen', stageX + stageWidth / 2, stageY + stageHeight / 2);
+            }
+            
+            const label = presenterId === this.userId
+                ? 'You are sharing your screen'
+                : `${(this.participants.get(presenterId) || {}).name || 'A participant'} is sharing their screen`;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(stageX, stageY, stageWidth, 40);
+            ctx.fillStyle = '#4cc9f0';
+            ctx.font = 'bold 17px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, stageX + 14, stageY + 20);
+            ctx.restore();
+            
+            const railX = stageX + stageWidth + gap;
+            const count = Math.max(1, sources.length);
+            const tileHeight = (stageHeight - gap * (count - 1)) / count;
+            sources.forEach((source, index) => {
+                const tileY = stageY + index * (tileHeight + gap);
+                const video = this.ensureRecordingVideo(source.id, source.stream);
+                this.drawRecordingTile(ctx, video, railX, tileY, railWidth, tileHeight, source.name, this.getRecordingEmptyText(source));
+            });
+        } else {
+            const count = Math.max(1, sources.length);
+            const columns = count <= 1 ? 1 : count <= 4 ? 2 : 3;
+            const rows = Math.ceil(count / columns);
+            const tileWidth = (width - gap * (columns + 1)) / columns;
+            const tileHeight = (height - gap * (rows + 1)) / rows;
+            
+            sources.forEach((source, index) => {
+                const column = index % columns;
+                const row = Math.floor(index / columns);
+                const tileX = gap + column * (tileWidth + gap);
+                const tileY = gap + row * (tileHeight + gap);
+                const video = this.ensureRecordingVideo(source.id, source.stream);
+                this.drawRecordingTile(ctx, video, tileX, tileY, tileWidth, tileHeight, source.name, this.getRecordingEmptyText(source));
+            });
+        }
+        
+        ctx.fillStyle = 'rgba(220, 38, 38, 0.9)';
+        ctx.beginPath();
+        ctx.arc(width - 78, 30, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('REC', width - 64, 31);
+    }
+    
+    attachRecordingAudio() {
+        if (!this._recordAudioCtx || !this._recordAudioDest) return;
+        
+        const streams = [];
+        if (this.localStream) streams.push(['local', this.localStream]);
+        if (this.screenStream) streams.push(['screen', this.screenStream]);
+        this.remoteStreams.forEach((stream, peerId) => streams.push(['peer:' + peerId, stream]));
+        
+        streams.forEach(([key, stream]) => {
+            const tracks = stream.getAudioTracks();
+            if (!tracks.length) return;
+            
+            const signature = key + ':' + tracks.map(track => track.id).sort().join(',');
+            if (this._recordAudioConnected.has(signature)) return;
+            
             try {
-                if (!this.localStream) {
-                    this.showMessage('❌ Start camera first', 'error');
-                    return;
+                const source = this._recordAudioCtx.createMediaStreamSource(new MediaStream(tracks));
+                source.connect(this._recordAudioDest);
+                this._recordAudioSources.push(source);
+                this._recordAudioConnected.add(signature);
+            } catch (error) {
+                console.warn('Could not mix recording audio:', error.message);
+            }
+        });
+    }
+    
+    cleanupRecordingResources() {
+        if (this._recordRAF) {
+            cancelAnimationFrame(this._recordRAF);
+            this._recordRAF = null;
+        }
+        
+        if (this._recordAudioTimer) {
+            clearInterval(this._recordAudioTimer);
+            this._recordAudioTimer = null;
+        }
+        
+        if (this._recordingVideos) {
+            this._recordingVideos.forEach(({ video }) => {
+                video.pause();
+                video.srcObject = null;
+                video.remove();
+            });
+            this._recordingVideos.clear();
+        }
+        
+        this._recordAudioSources.forEach(source => {
+            try {
+                source.disconnect();
+            } catch (error) {
+                // source may already be detached
+            }
+        });
+        this._recordAudioSources = [];
+        this._recordAudioConnected = new Set();
+        
+        if (this._recordAudioCtx) {
+            try {
+                const closing = this._recordAudioCtx.close();
+                if (closing && closing.catch) closing.catch(() => {});
+            } catch (error) {
+                // already closed
+            }
+            this._recordAudioCtx = null;
+            this._recordAudioDest = null;
+        }
+        
+        this._recordCanvas = null;
+        this._recordCtx = null;
+    }
+    
+    async startRecording() {
+        try {
+            if (!this.roomId) {
+                this.showMessage('❌ Join or start a session before recording', 'error');
+                return;
+            }
+            
+            if (typeof MediaRecorder === 'undefined' || !HTMLCanvasElement.prototype.captureStream) {
+                this.showMessage('❌ Recording is not supported in this browser', 'error');
+                return;
+            }
+            
+            this.recordedChunks = [];
+            this._recordingVideos = new Map();
+            this._recordAudioSources = [];
+            this._recordAudioConnected = new Set();
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = 1280;
+            canvas.height = 720;
+            this._recordCanvas = canvas;
+            this._recordCtx = canvas.getContext('2d');
+            
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                this._recordAudioCtx = new AudioCtx();
+                this._recordAudioDest = this._recordAudioCtx.createMediaStreamDestination();
+                this.attachRecordingAudio();
+                if (this._recordAudioCtx.state === 'suspended') {
+                    this._recordAudioCtx.resume().catch(() => {});
                 }
+            }
+            
+            const canvasStream = canvas.captureStream(30);
+            const recordingStream = new MediaStream(canvasStream.getVideoTracks());
+            if (this._recordAudioDest) {
+                this._recordAudioDest.stream.getAudioTracks().forEach(track => recordingStream.addTrack(track));
+            }
+            
+            const mimeTypes = [
+                'video/webm;codecs=vp9,opus',
+                'video/webm;codecs=vp8,opus',
+                'video/webm',
+                'video/mp4'
+            ];
+            const mimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+            this.mediaRecorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+            
+            this.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    this.recordedChunks.push(event.data);
+                }
+            };
+            
+            this.mediaRecorder.onstop = () => {
+                const type = this.mediaRecorder ? this.mediaRecorder.mimeType : 'video/webm';
+                const extension = type.includes('mp4') ? 'mp4' : 'webm';
+                const blob = new Blob(this.recordedChunks, { type });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `recording-${this.roomId}-${Date.now()}.${extension}`;
+                a.click();
+                URL.revokeObjectURL(url);
                 
-                this.recordedChunks = [];
-                const mimeTypes = [
-                    'video/webm;codecs=vp9,opus',
-                    'video/webm;codecs=vp8,opus',
-                    'video/webm',
-                    'video/mp4'
-                ];
-                const mimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
-                this.mediaRecorder = new MediaRecorder(this.localStream, mimeType ? { mimeType } : undefined);
-                
-                this.mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        this.recordedChunks.push(event.data);
-                    }
-                };
-                
-                this.mediaRecorder.onstop = () => {
-                    const type = this.mediaRecorder.mimeType || 'video/webm';
-                    const extension = type.includes('mp4') ? 'mp4' : 'webm';
-                    const blob = new Blob(this.recordedChunks, { type });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `recording-${this.roomId}-${Date.now()}.${extension}`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    
-                    this.showMessage('🎥 Recording saved', 'success');
-                };
-                
-                this.mediaRecorder.start(1000);
-                this.isRecording = true;
+                this.cleanupRecordingResources();
+                this.mediaRecorder = null;
+                this.isRecording = false;
                 
                 const recordBtn = document.getElementById('recordBtn');
                 if (recordBtn) {
-                    recordBtn.innerHTML = '<i class="fas fa-stop"></i> Stop Recording';
+                    recordBtn.innerHTML = '<i class="fas fa-video"></i> Record Session';
                 }
                 
-                this.showMessage('🔴 Recording started', 'success');
-                
-            } catch (error) {
-                console.error('Error starting recording:', error);
-                this.showMessage('❌ Failed to start recording: ' + error.message, 'error');
-            }
-        } else {
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                this.mediaRecorder.stop();
-            }
-            this.isRecording = false;
+                this.showMessage('🎥 Recording saved', 'success');
+            };
+            
+            this.isRecording = true;
+            this.mediaRecorder.start(1000);
+            
+            const renderFrame = () => {
+                if (!this.isRecording) return;
+                this.drawRecordingFrame();
+                this._recordRAF = requestAnimationFrame(renderFrame);
+            };
+            this._recordRAF = requestAnimationFrame(renderFrame);
+            this._recordAudioTimer = setInterval(() => this.attachRecordingAudio(), 2000);
             
             const recordBtn = document.getElementById('recordBtn');
             if (recordBtn) {
-                recordBtn.innerHTML = '<i class="fas fa-video"></i> Record Session';
+                recordBtn.innerHTML = '<i class="fas fa-stop"></i> Stop Recording';
             }
+            
+            this.showMessage('🔴 Recording started — capturing the session view', 'success');
+            
+        } catch (error) {
+            console.error('Error starting recording:', error);
+            this.showMessage('❌ Failed to start recording: ' + error.message, 'error');
+            this.isRecording = false;
+            this.cleanupRecordingResources();
+        }
+    }
+    
+    stopRecording() {
+        if (!this.isRecording) return;
+        this.isRecording = false;
+        
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            this.mediaRecorder.stop();
+        } else {
+            this.cleanupRecordingResources();
+        }
+        
+        const recordBtn = document.getElementById('recordBtn');
+        if (recordBtn) {
+            recordBtn.innerHTML = '<i class="fas fa-video"></i> Record Session';
         }
     }
     
@@ -2963,6 +3293,11 @@ class ProctoringApp {
         
         this.stopBackgroundProcessor();
         
+        // Finalize the recording while the composed sources are still alive
+        if (this.isRecording) {
+            this.stopRecording();
+        }
+        
         if (this.cameraStream) {
             this.cameraStream.getTracks().forEach(track => track.stop());
             this.cameraStream = null;
@@ -2978,6 +3313,7 @@ class ProctoringApp {
             this.screenStream = null;
         }
         
+        // Recording is stopped above so the download is finalized with live sources
         if (this.isRecording && this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             this.mediaRecorder.stop();
             this.isRecording = false;
